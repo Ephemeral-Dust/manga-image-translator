@@ -4,7 +4,12 @@ import cv2
 import pytest
 import numpy as np
 
-from manga_translator.rendering import dispatch as dispatch_rendering, dispatch_eng_render
+from manga_translator.rendering import (
+    dispatch as dispatch_rendering,
+    dispatch_eng_render,
+    resize_regions_to_font_size,
+    text_render,
+)
 from manga_translator.utils import (
     TextBlock,
     visualize_textblocks,
@@ -13,6 +18,8 @@ from manga_translator.utils import (
 
 RENDER_IMAGE_FOLDER = 'test/testdata/render'
 os.makedirs(RENDER_IMAGE_FOLDER, exist_ok=True)
+
+text_render.set_font('')
 
 def save_result(path, img, regions):
     path = os.path.join(RENDER_IMAGE_FOLDER, path)
@@ -47,3 +54,23 @@ async def test_default_renderer():
 
     img_rendered = await dispatch_rendering(img, regions, hyphenate=False)
     save_result('default1.png', img_rendered, regions)
+
+
+def test_resize_regions_stays_within_image():
+    """A longer translation expands the text box, but the expanded box must stay
+    on the canvas, otherwise the text warp drops everything past the image edge."""
+    width, height = 500, 325
+    img = np.zeros((height, width, 3), dtype=np.uint8)
+    region = TextBlock(
+        [[[85, 61], [384, 61], [85, 135], [384, 135]]],
+        texts=['自転車を除く'],
+        translation='Except for the bike.',
+        font_size=50,
+    )
+    region.target_lang = 'ENG'
+
+    dst_points_list = resize_regions_to_font_size(img, [region], None, 0, -1)
+    dst_points = dst_points_list[0]
+    assert dst_points is not None
+    assert dst_points[..., 0].max() <= width - 1
+    assert dst_points[..., 1].max() <= height - 1

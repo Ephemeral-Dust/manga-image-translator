@@ -94,9 +94,21 @@ def main():
     parser.add_argument("--url", default=os.environ.get("MIMG_URL", DEFAULT_URL))
     parser.add_argument("--api-key", default=os.environ.get("MIMG_API_KEY"))
     parser.add_argument("--profile", default="manga", help="server profile (manga|generic)")
+    parser.add_argument("--config", default="{}",
+                        help='partial pipeline config as JSON (or a .json file path), e.g. '
+                             '\'{"render":{"font_size_offset":-20}}\'')
     parser.add_argument("--no-generic", action="store_true", help="skip the generic-profile JSON run")
     parser.add_argument("--outdir", help="where to write results (default: <image>_server_test)")
     args = parser.parse_args()
+
+    try:
+        if os.path.isfile(args.config):
+            with open(args.config, encoding="utf-8") as f:
+                user_config = json.load(f)
+        else:
+            user_config = json.loads(args.config)
+    except ValueError as exc:
+        sys.exit(f"--config is not valid JSON ({exc})")
 
     if not args.image or not os.path.isfile(args.image):
         sys.exit(f"image not found: {args.image!r} (pass a path or set IMAGE_PATH in this file)")
@@ -109,12 +121,12 @@ def main():
     with open(args.image, "rb") as f:
         raw = f.read()
     b64 = base64.b64encode(raw).decode()
-    payload = {"image": f"data:image/png;base64,{b64}", "profile": args.profile}
+    payload = {"image": f"data:image/png;base64,{b64}", "config": user_config, "profile": args.profile}
     headers = {"Content-Type": "application/json"}
     if args.api_key:
         headers["X-API-Key"] = args.api_key
 
-    print(f"server: {args.url}  image: {args.image}  profile: {args.profile}")
+    print(f"server: {args.url}  image: {args.image}  profile: {args.profile}  config: {json.dumps(user_config)}")
 
     status, body = http(f"{args.url}/health", headers={"Accept": "application/json"})
     print(f"[{' OK ' if status == 200 else 'FAIL'}] /health: {body.decode('utf-8', 'replace')}")
@@ -125,7 +137,7 @@ def main():
         save(outdir, f"{stem}_{args.profile}.png", png)
 
     form_body, content_type = multipart(os.path.basename(args.image), raw,
-                                        {"config": "{}", "profile": args.profile})
+                                        {"config": json.dumps(user_config), "profile": args.profile})
     form_headers = {"Content-Type": content_type}
     if args.api_key:
         form_headers["X-API-Key"] = args.api_key
@@ -150,7 +162,7 @@ def main():
             save(outdir, f"{stem}_generic.json", gj)
             print_regions(gj)
 
-    batch_payload = {"images": [payload["image"]], "config": {}, "profile": args.profile}
+    batch_payload = {"images": [payload["image"]], "config": user_config, "profile": args.profile}
     zip_body = call("POST /translate/batch/image", f"{args.url}/translate/batch/image",
                     data=json.dumps(batch_payload).encode(), headers=headers)
     if zip_body:

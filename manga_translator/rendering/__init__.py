@@ -116,9 +116,10 @@ def resize_regions_to_font_size(img: np.ndarray, text_regions: List['TextBlock']
                         region.center, pts.reshape(1, -1), -region.angle,  
                         to_int=False  
                     ).reshape(-1, 4, 2)  
-                    # 移除边界限制，允许文本超出检测框边界
-                    # dst_points[..., 0] = dst_points[..., 0].clip(0, img.shape[1] - 1)  
-                    # dst_points[..., 1] = dst_points[..., 1].clip(0, img.shape[0] - 1)  
+                    # Keep the (possibly expanded) box within the canvas, otherwise
+                    # the text warp silently drops everything past the image edge
+                    dst_points[..., 0] = dst_points[..., 0].clip(0, img.shape[1] - 1)
+                    dst_points[..., 1] = dst_points[..., 1].clip(0, img.shape[0] - 1)
                     dst_points = dst_points.astype(np.int64)
                     single_axis_expanded = True
                     # logger.debug(f"Successfully expanded horizontal text width: xfact={scale_x:.2f}")  
@@ -149,9 +150,10 @@ def resize_regions_to_font_size(img: np.ndarray, text_regions: List['TextBlock']
                         region.center, pts.reshape(1, -1), -region.angle,  
                         to_int=False  
                     ).reshape(-1, 4, 2)  
-                    # 移除边界限制，允许文本超出检测框边界
-                    # dst_points[..., 0] = dst_points[..., 0].clip(0, img.shape[1] - 1)  
-                    # dst_points[..., 1] = dst_points[..., 1].clip(0, img.shape[0] - 1)  
+                    # Keep the (possibly expanded) box within the canvas, otherwise
+                    # the text warp silently drops everything past the image edge
+                    dst_points[..., 0] = dst_points[..., 0].clip(0, img.shape[1] - 1)
+                    dst_points[..., 1] = dst_points[..., 1].clip(0, img.shape[0] - 1)
                     dst_points = dst_points.astype(np.int64)
                     single_axis_expanded = True
                     # logger.debug(f"Successfully expanded vertical text width: xfact={scale_x:.2f}")  
@@ -213,9 +215,10 @@ def resize_regions_to_font_size(img: np.ndarray, text_regions: List['TextBlock']
                     scaled_unrotated_points = np.array(poly.exterior.coords[:4])  
 
                     dst_points = rotate_polygons(region.center, scaled_unrotated_points.reshape(1, -1), -region.angle, to_int=False).reshape(-1, 4, 2)  
-                    # 移除边界限制，允许文本超出检测框边界
-                    # dst_points[..., 0] = dst_points[..., 0].clip(0, img.shape[1] - 1)  
-                    # dst_points[..., 1] = dst_points[..., 1].clip(0, img.shape[0] - 1)  
+                    # Keep the (possibly expanded) box within the canvas, otherwise
+                    # the text warp silently drops everything past the image edge
+                    dst_points[..., 0] = dst_points[..., 0].clip(0, img.shape[1] - 1)
+                    dst_points[..., 1] = dst_points[..., 1].clip(0, img.shape[0] - 1)
                     dst_points = dst_points.astype(np.int64)  
                     dst_points = dst_points.reshape((-1, 4, 2))  
                     # logger.debug(f"Finished calculating scaled dst_points.")  
