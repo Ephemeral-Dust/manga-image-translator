@@ -211,49 +211,40 @@ To use [CUDA](https://developer.nvidia.com/cuda-downloads?target_os=Windows&targ
 Requirements:
 
 - Docker (19.03+ for CUDA / GPU acceleration)
-- Docker Compose (Optional, if you want to use the files in `demo/doc` folder)
 - Nvidia Container Runtime (Optional, if you want to use CUDA)
 
 This project supports Docker, with the image being `zyddnys/manga-image-translator:main`.
 This Docker image contains all the dependencies and models required for the project.
 Please note that this image is quite large (~15GB).
 
-#### Run Web Server
+#### Run Standalone HTTP Server
 
-You can start the Web Server (CPU) using the following command:
+The `standalone` package exposes a generic `POST image -> typeset image` API for external
+apps (browser extensions, game translators, other backends). Start it (CPU) with:
 > Note that you need to add the required environment variables using `-e` or `--env`
 
 ```bash
 docker run \
-  --name manga_image_translator_cpu \
+  --name manga_image_translator \
   -p 5003:5003 \
   --ipc=host \
   --entrypoint python \
   --rm \
-  -v /demo/doc/../../result:/app/result \
-  -v /demo/doc/../../server/main.py:/app/server/main.py \
-  -v /demo/doc/../../server/instance.py:/app/server/instance.py \
+  -v <targetFolder>:/app/result \
   -e OPENAI_API_KEY='' \
   -e OPENAI_API_BASE='' \
   zyddnys/manga-image-translator:main \
-  server/main.py --verbose --start-instance --host=0.0.0.0 --port=5003
+  -m standalone --verbose --host=0.0.0.0 --port=5003
 ```
 
-Or use the compose file
-> Note that you need to add the required environment variables in the file first
-
-```bash
-docker-compose -f demo/doc/docker-compose-web-with-cpu.yml up
-```
-
-The Web Server starts on port [8000](http://localhost:8000) by default, and the translation results will be saved in the `/result` folder.
+The server starts on port [5003](http://localhost:5003). Open `/docs` for the OpenAPI
+documentation, and see `standalone/README.md` for the full API contract and examples.
 
 ##### Using Nvidia GPU
 
 > To use a supported GPU, please read the `Docker` section above first. You will need some special dependencies.
 
-You can start the Web Server (GPU) using the following command:
-> Note that you need to add the required environment variables using `-e` or `--env`
+Add `--gpus all` to the command and `--use-gpu` to the flags:
 
 ```bash
 docker run \
@@ -263,21 +254,12 @@ docker run \
   --gpus all \
   --entrypoint python \
   --rm \
-  -v /demo/doc/../../result:/app/result \
-  -v /demo/doc/../../server/main.py:/app/server/main.py \
-  -v /demo/doc/../../server/instance.py:/app/server/instance.py \
+  -v <targetFolder>:/app/result \
   -e OPENAI_API_KEY='' \
   -e OPENAI_API_BASE='' \
   -e OPENAI_HTTP_PROXY='' \
   zyddnys/manga-image-translator:main \
-  server/main.py --verbose --start-instance --host=0.0.0.0 --port=5003 --use-gpu
-```
-
-Or use the compose file (for Web Server + GPU):
-> Note that you need to add the required environment variables in the file first
-
-```bash
-docker-compose -f demo/doc/docker-compose-web-with-gpu.yml up
+  -m standalone --verbose --use-gpu --host=0.0.0.0 --port=5003
 ```
 
 #### Use as CLI
@@ -313,29 +295,13 @@ make run-web-server
 $ python -m manga_translator local -v -i <path>
 # The results can be found in `<path_to_image_folder>-translated`.
 ```
-### Web Mode
-#### Old UI
+### Standalone Server Mode
 ```bash
-# Start a web server.
-$ cd server
-$ python main.py --use-gpu
-# The web demo service address is http://127.0.0.1:8000
+# Start the standalone HTTP server for external integrations.
+$ python -m standalone --use-gpu
+# OpenAPI documentation: http://127.0.0.1:5003/docs
 ```
-#### New UI
-[Documentation](../main/front/README.md)
-
-### API Mode
-```bash
-# Start a web server.
-$ cd server
-$ python main.py --use-gpu
-# The API service address is http://127.0.0.1:8001
-```
-#### API Documentation
-
-Read the openapi documentation at: `127.0.0.1:8000/docs`
-
-[FastAPI-html](https://cfbed.1314883.xyz/file/1741386061808_FastAPI%20-%20Swagger%20UI.html)
+Request formats, profiles, and client examples are documented in `standalone/README.md`.
 
 ### Config-help Mode
 ```bash
