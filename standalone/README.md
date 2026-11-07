@@ -56,9 +56,10 @@ matching `X-API-Key` header; `/health` and `/config-schema` stay open.
 overrides the preset.
 
 - `manga` — no overrides: the upstream defaults are already manga-tuned.
-- `generic` — first guess for screenshots/UI/game text (paddle detection, mocr
-  OCR, nllb translation, LTR rendering). **Unverified**: tune `standalone/profiles.py`
-  against real images before trusting it.
+- `generic` — for screenshots/UI/real-world text: stock detector with more
+  sensitive thresholds (picks up small/missed text at the cost of merging
+  multi-line blocks), lighter mask dilation, LTR rendering. Based on signage
+  tests 2026-11-07; still tune `standalone/profiles.py` against more images.
 
 ## Concurrency
 

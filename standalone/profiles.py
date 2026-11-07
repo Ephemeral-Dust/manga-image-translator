@@ -10,12 +10,19 @@ from typing import Any, Dict, Optional
 # The upstream Config defaults are already tuned for manga, so that profile is empty.
 PROFILES: Dict[str, Dict[str, Any]] = {
     "manga": {},
-    # First guesses for screenshots / UI / game text. UNVERIFIED: tune against
-    # real images before relying on these choices.
+    # First guesses for screenshots / UI / game text. The earlier paddle+mocr+nllb
+    # preset found 0 regions on real sign photos and merged lines on synthetic
+    # ones, so it is replaced by the stock detector with more sensitive
+    # thresholds — verified on signage 2026-11-07 (single image per setting,
+    # Low confidence; still recovers missed small text but merges multi-line
+    # blocks into one region).
     "generic": {
-        "detector": {"detector": "paddle"},
-        "ocr": {"ocr": "mocr"},
-        "translator": {"translator": "nllb"},
+        "detector": {
+            "text_threshold": 0.4,
+            "box_threshold": 0.5,
+            "unclip_ratio": 1.5,
+        },
+        "mask_dilation_offset": 4,
         "render": {"rtl": False},
     },
 }
