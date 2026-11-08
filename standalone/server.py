@@ -40,6 +40,7 @@ from manga_translator import Config, MangaTranslator
 from .images import to_pil_image
 from . import profiles
 from .profiles import AUTO_PROFILE, PROFILES, apply_profile
+from .render import RenderRegion, render_regions
 from .to_json import TranslationResponse, to_translation
 
 
@@ -132,6 +133,14 @@ class Engine:
             finally:
                 self.stage, self.finished = "idle", True
 
+    async def render(self, image, config, regions) -> object:
+        async with self.lock:
+            self.stage, self.finished = "queued", False
+            try:
+                return await render_regions(self.manga, image, config, regions)
+            finally:
+                self.stage, self.finished = "idle", True
+
 
 def build_config(raw, profile: Optional[str]) -> Config:
     """Validate a request-supplied config dict against the pipeline Config model.
@@ -197,6 +206,17 @@ class BatchTranslateRequest(BaseModel):
     profile: Optional[str] = None
 
 
+class RenderRequest(BaseModel):
+    image: str | bytes
+    """URL, data URI, bare base64, or raw image bytes (original scale: region coords must match)"""
+    regions: List[RenderRegion]
+    """Boxes + text to typeset; same shape as the translations array from /translate/json"""
+    config: dict = Field(default_factory=dict)
+    """Partial pipeline config; unset fields come from the profile, then upstream defaults"""
+    profile: Optional[str] = None
+    """Config defaults preset: "manga" (default), "generic", or "auto" (picks by color cue, no cascade)"""
+
+
 def get_engine(request: Request) -> Engine:
     engine = getattr(request.app.state, "engine", None)
     if engine is None:
@@ -256,6 +276,23 @@ def _parse_raw_config(raw) -> dict:
     if not isinstance(raw, dict):
         raise HTTPException(422, "config must be a JSON object")
     return raw
+
+
+def _parse_regions(raw) -> List[RenderRegion]:
+    """Validate a regions payload (JSON string from multipart forms)."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(422, f"regions is not valid JSON: {exc}")
+    if raw is None:
+        raw = []
+    if not isinstance(raw, list):
+        raise HTTPException(422, "regions must be a JSON array of region objects")
+    try:
+        return [RenderRegion.model_validate(item) for item in raw]
+    except ValidationError as exc:
+        raise HTTPException(422, f"Invalid regions: {exc}")
 
 
 @asynccontextmanager
@@ -391,3 +428,47 @@ async def translate_batch_image_form(
     raw = _parse_raw_config(config)
     contexts, served = await _translate_batch(engine, pil_images, raw, profile)
     return zip_pngs(contexts, served)
+
+
+async def _render_one(request: Request, image, regions, config_data, profile):
+    """Shared body for the two /render endpoints. Returns (pil_result, served_profile)."""
+    engine = get_engine(request)
+    pil_image = await to_pil_image(image)
+    raw = _parse_raw_config(config_data)
+    # No cascade here: detection already happened client-side, so "auto" can
+    # only pick which preset's render knobs apply (the color-cue-first one).
+    served = resolve_profiles(profile, pil_image)[0]
+    config = build_config(raw, served)
+    if not regions:
+        return pil_image, served  # nothing to inpaint or typeset
+    try:
+        ctx = await engine.render(pil_image, config, regions)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    return ctx.result, served
+
+
+def _png_response(image, served: str) -> Response:
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return Response(buf.getvalue(), media_type="image/png", headers={"X-MIMG-Profile": served})
+
+
+@app.post("/render/image", response_class=Response, response_description="typeset image, PNG")
+async def render_image(data: RenderRequest, request: Request, _: None = Depends(check_api_key)):
+    result, served = await _render_one(request, data.image, data.regions, data.config, data.profile)
+    return _png_response(result, served)
+
+
+@app.post("/render/with-form/image", response_class=Response, response_description="typeset image, PNG")
+async def render_image_form(
+    request: Request,
+    image: UploadFile = File(...),
+    regions: str = Form(...),
+    config: str = Form("{}"),
+    profile: Optional[str] = Form(None),
+    _: None = Depends(check_api_key),
+):
+    data = await image.read()
+    result, served = await _render_one(request, data, _parse_regions(regions), config, profile)
+    return _png_response(result, served)

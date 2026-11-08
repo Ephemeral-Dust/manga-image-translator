@@ -31,12 +31,19 @@ stages). The first start is slow; later starts reuse the cache.
 | POST | `/translate/with-form/json` | multipart | same JSON |
 | POST | `/translate/batch/image` | JSON `BatchTranslateRequest` (`images` list) | zip of PNGs |
 | POST | `/translate/batch/with-form/image` | multipart, repeated `images` files | zip of PNGs |
+| POST | `/render/image` | JSON `RenderRequest` (`image` + `regions` you detected/translated yourself) | PNG |
+| POST | `/render/with-form/image` | multipart `image` file + `regions` JSON string field | PNG |
 | GET | `/health` | — | `{status, ready, stage, busy, gpu}` |
 | GET | `/config-schema` | — | JSON Schema of the `config` object |
 
 `image` accepts a `data:` URI, an `http(s)` URL, bare base64, or raw bytes (in
 JSON that means base64-encoded). `config` is any subset of the pipeline config —
 see `/config-schema` or `python -m manga_translator config-help`.
+
+The `/render/*` pair skips detection, OCR and translation: you send text boxes
+plus the text to render (field names match the `/translate/json` regions, so
+you can post that array back with translations filled in) and the server only
+inpaints the boxes and typesets the text. See API.md section 14.
 
 Example:
 
@@ -69,7 +76,9 @@ overrides the preset.
 Every translate response carries an `X-MIMG-Profile` header naming the preset
 that actually served (CORS-exposed, so browser JS can read it); batch responses
 list the per-image profiles comma-joined. Unknown profile names are rejected
-with 422 and the list of known names.
+with 422 and the list of known names. On `/render/*` there is nothing to
+detect, so `auto` cannot cascade — it just picks the preset its color cue
+would try first, for render-side defaults only.
 
 ## Concurrency
 

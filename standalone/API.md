@@ -2,8 +2,8 @@
 
 > Written for AI agents and programmatic clients: everything needed to call
 > this service without reading the source. Facts verified 2026-11-07 against
-> commit `e2ce54d` + auto-profile changes. If this file and `/openapi.json`
-> disagree, the live server wins.
+> commit `e2ce54d` + auto-profile + render-endpoint changes. If this file and
+> `/openapi.json` disagree, the live server wins.
 
 ## 1. What this service does
 
@@ -26,6 +26,9 @@ Capabilities an agent can rely on:
 - Behavior presets (`profile`) adapt the manga-tuned pipeline to generic
   images (screenshots, signage, UI), and `auto` picks a preset per image.
 - Full pipeline tuning via a partial `config` object in the request.
+- Render-only mode (`/render/*`, section 14): post back text boxes +
+  translations from your own vision model and the server only inpaints and
+  typesets them.
 
 It does **not**: stream progress, do OCR-only mode without rendering (use
 `/translate/json` for text extraction), or manage a task queue — requests are
@@ -69,6 +72,8 @@ immediately with `ready: false` until the pipeline is loaded.
 | POST | `/translate/with-form/json` | multipart (same fields) | `application/json` |
 | POST | `/translate/batch/image` | `BatchTranslateRequest` (JSON) | `application/zip` (`result_1.png`, `result_2.png`, ... in request order) |
 | POST | `/translate/batch/with-form/image` | multipart, repeated `images` file fields (+ `config`, `profile`) | `application/zip` |
+| POST | `/render/image` | `RenderRequest` (JSON, section 14) | `image/png` |
+| POST | `/render/with-form/image` | multipart: `image` file + `regions`, `config`, `profile` string fields | `image/png` |
 | GET | `/health` | — | `{"status":"ok","ready":bool,"stage":str,"busy":bool,"gpu":bool}` |
 | GET | `/config-schema` | — | JSON Schema of the full `config` object |
 | GET | `/docs`, `/openapi.json` | — | Swagger UI / OpenAPI spec |
@@ -151,6 +156,9 @@ upstream defaults** — any key you set in `config` always wins.
 | `"auto"` | Not a preset — a per-image cascade: a millisecond colorfulness check (Hasler-Süsstrunk on a 64px thumbnail, threshold 25.0) orders two full attempts: grayscale → `manga` then `generic`; colorful → `generic` then `manga`. The **first preset that detects ≥1 text region serves**; the other never runs. If neither detects anything, the last-attempted preset serves (unchanged image). Cost: a wrong first guess doubles latency for that image. Known weakness: color manga (webtoons) start on `generic` and keep its result even when `manga` would typeset better — fallback triggers only on zero detections. |
 
 - Explicit profiles never cascade — exactly one attempt, no fallback.
+- On `/render/*` endpoints there is nothing to detect, so `auto` cannot
+  cascade: it simply takes the preset its color cue would try first, and only
+  render-side knobs (e.g. `render.rtl`) apply. See section 14.
 - Every translate response carries **`X-MIMG-Profile`** naming the preset that
   actually served (CORS-exposed; readable from browser JS).
 - Batch responses list profiles per image, comma-joined, deduplicated in order
@@ -239,6 +247,8 @@ profile's values.
 | 422 | `config` fails the schema | FastAPI validation array (`detail[].loc` names the offending path) |
 | 422 | unknown profile | `{"detail":"Unknown profile 'x'. Known profiles: generic, manga, auto"}` |
 | 422 | image undecodable / bad data URI | pydantic validation array on `image` |
+| 422 | render request: degenerate box, region outside the image, or no resolvable translation (section 14) | `{"detail":"..."}` plain string |
+| 422 | render `regions` not a JSON array / bad region objects | `{"detail":"..."}` (form) or FastAPI validation array (JSON body) |
 | 503 | server started with `MIMG_WARMUP=0` and pipeline not built yet | `{"detail":"Server is not ready..."}` |
 | 500 | pipeline finished without a result image | `{"detail":"..."}` |
 
@@ -273,6 +283,9 @@ from standalone.server import Engine, build_params
 engine = Engine(build_params())            # pipeline without HTTP layer
 ctx = await engine.translate(pil_image, config)   # ctx.result = PIL image,
                                                   # ctx.text_regions = regions
+
+from standalone.render import RenderRegion
+ctx = await engine.render(pil_image, config, [RenderRegion(...)])  # render-only path
 ```
 
 ## 11. Verifying / testing the service
@@ -291,12 +304,13 @@ venv\Scripts\python.exe try_server.py path\to\image.png [--profile auto] [--url 
 | File | Contents |
 |---|---|
 | `standalone/server.py` | endpoints, request models, profile resolution + auto cascade (`resolve_profiles`, `_translate_cascade`), engine/lock, CORS, auth |
+| `standalone/render.py` | render-only path: `RenderRegion` model, region→TextBlock conversion, mask synthesis, `render_regions()` |
 | `standalone/profiles.py` | preset dicts, `colorfulness()`, `auto_order()`, threshold constant |
 | `standalone/to_json.py` | JSON response models (`Translation`, `TranslationResponse`) |
 | `standalone/images.py` | input coercion: data URI / URL / base64 / bytes → PIL |
 | `standalone/__main__.py` | CLI flags → `MIMG_*` env translation |
 | `manga_translator/config.py` | the full `Config` model behind `config` (enums, defaults, descriptions) |
-| `test/test_standalone.py` | 19 offline tests encoding the contract above |
+| `test/test_standalone.py` | 31 offline tests encoding the contract above |
 | `try_server.py` | reference client |
 
 ## 13. Known limitations
@@ -311,3 +325,91 @@ venv\Scripts\python.exe try_server.py path\to\image.png [--profile auto] [--url 
   the default `sugoi` does not.
 - Rendering clamps text to detected boxes (fork fix `d021d66`): very dense
   text may be scaled down rather than overflowing.
+
+## 14. Render endpoints (client-side detection + translation)
+
+For clients that detect/OCR/translate text themselves (e.g. a vision model in
+a browser extension) and only need the server's inpainting + typesetting:
+
+| Method | Path | Request | 200 response |
+|---|---|---|---|
+| POST | `/render/image` | `RenderRequest` (JSON) | `image/png` |
+| POST | `/render/with-form/image` | multipart: `image` file + `regions`, `config`, `profile` string fields (`regions` = JSON array as string) | `image/png` |
+
+### RenderRequest (JSON body)
+
+```json
+{
+  "image":   "data:image/png;base64,iVBORw0KGgo...",   // required, same forms as TranslateRequest
+  "regions": [ { ... } ],                              // required, see below
+  "config":  { ... },                                  // optional, default {}
+  "profile": "generic"                                 // optional; see section 5 note
+}
+```
+
+### Region objects
+
+Field names intentionally match the `translations[]` objects `/translate/json`
+returns (section 6), so a client can fill translations in and post the array
+straight back:
+
+| Field | Required | Notes |
+|---|---|---|
+| `minX/minY/maxX/maxY` | yes | Pixel coords in the **original** image (clamped to bounds; a box with no overlap → 422). If the first pass used `upscale_ratio`, `/translate/json` coords are upscaled — convert back before posting. |
+| `translation` | usually | String to typeset. If omitted, `text[config.translator.target_lang]` (default `ENG`) is used. Neither present → 422. |
+| `text` | optional | Language-keyed source-text map, same shape as section 6. A non-target-language entry is used for mask fitting (deciding which pixels get painted out). |
+| `angle` | optional (0) | Text angle in degrees — carry over from `/translate/json` unchanged. |
+| `prob` | optional (1.0) | Detector confidence; unused when rendering. |
+| `text_color` | optional | `{"fg":[r,g,b],"bg":[r,g,b]}`. Omit and the server estimates both from the region's pixels. |
+| `is_bulleted_list` | optional | Accepted and ignored — recomputed from the text. |
+| `background` | optional | Accepted and ignored — inpainting always regenerates it from the input image. |
+
+### What the server does with them
+
+Per region: inpaint (paint whatever was inside the box out, honoring
+`inpainter` config) → typeset `translation` into the box using profile/config
+render settings (font, size fit, RTL order, hyphenation...). Detection, OCR
+and translation never run on these endpoints, so `detector`, `ocr` and
+`translator.translator` config keys have no effect here;
+`translator.target_lang` still decides the translation fallback lookup and the
+render script direction.
+
+### Round-trip example (server detects, your model translates, server renders)
+
+```python
+import base64, requests
+
+BASE = "http://127.0.0.1:5003"
+raw = open("page.jpg", "rb").read()
+data_uri = "data:image/jpeg;base64," + base64.b64encode(raw).decode()
+
+# 1. Server detects + OCRs, no server-side translation
+regions = requests.post(f"{BASE}/translate/json", json={
+    "image": data_uri,
+    "config": {"translator": {"translator": "none"}},
+}).json()["translations"]
+
+# 2. Your model translates each region
+for r in regions:
+    src = next(iter(r["text"]))
+    r["translation"] = my_translate(r["text"][src], "ENG")
+
+# 3. Server inpaints + typesets
+png = requests.post(f"{BASE}/render/image", json={
+    "image": data_uri,
+    "regions": regions,
+}).content
+open("out.png", "wb").write(png)
+```
+
+Behavior details:
+
+- Empty `regions` array → 200 with the input image returned unchanged (no
+  models touched).
+- Degenerate box (`maxX <= minX` or `maxY <= minY`) → 422.
+- No resolvable translation (no `translation`, no target-language key in
+  `text`) → 422 naming the target language.
+- Boxes partially outside the image are clamped; fully outside → 422.
+- `profile` selects render-side defaults only; `auto` cannot cascade here
+  (section 5). `X-MIMG-Profile` is sent on every render response.
+- Output is a full-size PNG, same as the translate image endpoints.

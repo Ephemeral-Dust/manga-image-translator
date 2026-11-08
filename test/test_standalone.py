@@ -6,6 +6,7 @@ tests never download or load model weights.
 """
 
 import io
+import json
 import os
 import zipfile
 
@@ -317,3 +318,166 @@ def test_batch_reports_per_image_profiles(client):
     # Passthrough detects nothing, so each image is served by the last preset
     # tried: the color one ends on manga, the grayscale one on generic.
     assert resp.headers["x-mimg-profile"] == "manga,generic"
+
+
+# --- /render endpoints: client detects + translates, server inpaints + typesets.
+# Inpainter "none" keeps these weight-free; the default renderer is PIL-based.
+
+RENDER_CONFIG = {"inpainter": {"inpainter": "none"}}
+
+
+def render_region(**over):
+    region = {
+        "minX": 2, "minY": 2, "maxX": 60, "maxY": 26,
+        "angle": 0, "prob": 0.9,
+        "text": {"JPN": "hello there", "ENG": "Hello"},
+    }
+    region.update(over)
+    return region
+
+
+def test_render_image_basic(client):
+    img = make_png(64, 48)
+    resp = client.post("/render/image", json={
+        "image": data_uri(img),
+        "regions": [render_region(translation="Hello")],
+        "config": RENDER_CONFIG,
+    })
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"] == "image/png"
+    assert resp.headers["x-mimg-profile"] == "manga"
+    result = decode_png(resp.content)
+    assert result.size == (64, 48)
+    original = np.asarray(Image.open(io.BytesIO(img)).convert("RGB"))
+    assert not np.array_equal(np.asarray(result.convert("RGB")), original)  # text was painted
+
+
+def test_render_falls_back_to_text_map(client):
+    # Flow B shape: post the /translate/json array back with only the text map
+    # filled (translation lives under the target language key).
+    body = {
+        "image": data_uri(make_png(64, 48)),
+        "regions": [render_region()],
+        "config": RENDER_CONFIG,
+    }
+    resp_fallback = client.post("/render/image", json=body)
+    assert resp_fallback.status_code == 200, resp_fallback.text
+    resp_explicit = client.post("/render/image", json={
+        **body, "regions": [render_region(translation="Hello")],
+    })
+    assert resp_explicit.status_code == 200, resp_explicit.text
+    # The pipeline is deterministic, so the same rendered string must produce
+    # identical bytes: proves text["ENG"] served as the translation.
+    assert resp_fallback.content == resp_explicit.content
+
+
+def test_render_missing_translation_422(client):
+    resp = client.post("/render/image", json={
+        "image": data_uri(make_png(64, 48)),
+        "regions": [render_region(text={"JPN": "yatta"})],
+        "config": RENDER_CONFIG,
+    })
+    assert resp.status_code == 422, resp.text
+    assert "ENG" in resp.text
+
+
+def test_render_degenerate_box_422(client):
+    resp = client.post("/render/image", json={
+        "image": data_uri(make_png(64, 48)),
+        "regions": [render_region(maxX=2, translation="x")],
+        "config": RENDER_CONFIG,
+    })
+    assert resp.status_code == 422
+    assert "degenerate" in resp.text
+
+
+def test_render_region_outside_image_422(client):
+    resp = client.post("/render/image", json={
+        "image": data_uri(make_png(8, 8)),
+        "regions": [render_region(minX=100, minY=100, maxX=120, maxY=120, translation="x")],
+        "config": RENDER_CONFIG,
+    })
+    assert resp.status_code == 422
+    assert "overlap" in resp.text
+
+
+def test_render_clamps_partially_outside_box(client):
+    resp = client.post("/render/image", json={
+        "image": data_uri(make_png(64, 48)),
+        "regions": [render_region(minX=-10, maxY=100, translation="Hello")],
+        "config": RENDER_CONFIG,
+    })
+    assert resp.status_code == 200, resp.text
+    assert decode_png(resp.content).size == (64, 48)
+
+
+def test_render_empty_regions_returns_input_unchanged(client):
+    img = make_png(10, 6, color=(1, 2, 3))
+    resp = client.post("/render/image", json={"image": data_uri(img), "regions": []})
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-mimg-profile"] == "manga"
+    result = np.asarray(decode_png(resp.content).convert("RGB"))
+    original = np.asarray(Image.open(io.BytesIO(img)).convert("RGB"))
+    assert np.array_equal(result, original)
+
+
+def test_render_accepts_json_roundtrip_fields(client):
+    # Everything /translate/json emits must post back cleanly, including the
+    # fields the render path ignores (background, is_bulleted_list).
+    resp = client.post("/render/image", json={
+        "image": data_uri(make_png(64, 48)),
+        "regions": [render_region(
+            translation="Hello",
+            is_bulleted_list=True,
+            text_color={"fg": [255, 255, 255], "bg": [0, 0, 0]},
+            background="data:image/png;base64,ignored",
+        )],
+        "config": RENDER_CONFIG,
+    })
+    assert resp.status_code == 200, resp.text
+
+
+def test_render_with_form(client):
+    resp = client.post(
+        "/render/with-form/image",
+        files={"image": ("page.png", make_png(64, 48), "image/png")},
+        data={
+            "regions": json.dumps([render_region(translation="Hello")]),
+            "config": json.dumps(RENDER_CONFIG),
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert decode_png(resp.content).size == (64, 48)
+
+
+def test_render_form_bad_regions_json_422(client):
+    resp = client.post(
+        "/render/with-form/image",
+        files={"image": ("page.png", make_png(8, 8), "image/png")},
+        data={"regions": "not json"},
+    )
+    assert resp.status_code == 422
+    assert "regions is not valid JSON" in resp.text
+
+
+def test_render_auto_picks_single_profile_by_color(client):
+    # No cascade is possible on render (detection already happened client-side),
+    # so auto just picks the color-cue-first preset for the render knobs.
+    resp = client.post("/render/image", json={
+        "image": data_uri(make_color_png((64, 48))),
+        "regions": [render_region(translation="Hello")],
+        "config": RENDER_CONFIG,
+        "profile": "auto",
+    })
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-mimg-profile"] == "generic"  # color image -> generic first
+
+
+def test_render_unknown_profile_422(client):
+    resp = client.post("/render/image", json={
+        "image": data_uri(make_png(8, 8)),
+        "regions": [],
+        "profile": "nope",
+    })
+    assert resp.status_code == 422
+    assert "Unknown profile" in resp.text
