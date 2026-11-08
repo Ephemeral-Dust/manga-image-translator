@@ -410,6 +410,15 @@ Behavior details:
 - No resolvable translation (no `translation`, no target-language key in
   `text`) → 422 naming the target language.
 - Boxes partially outside the image are clamped; fully outside → 422.
+- Typeset glyph size starts at the box's **short** side (box height for
+  horizontal lines, box width for vertical columns) and is then fitted by the
+  render config (`render.font_size` fixes it outright; `render.font_size_offset`
+  / `font_size_minimum` adjust). A box too small for the translation is widened
+  to fit rather than shrinking the font, so rendered text can extend past the
+  posted box.
+- A region whose box collapses to a line, or whose text cannot be mapped back
+  onto it, is skipped with a server-side warning — the other regions still
+  render and the response is still 200. There is no per-region success flag.
 - `profile` selects render-side defaults only; `auto` cannot cascade here
   (section 5). `X-MIMG-Profile` is sent on every render response.
 - Output is a full-size PNG, same as the translate image endpoints.

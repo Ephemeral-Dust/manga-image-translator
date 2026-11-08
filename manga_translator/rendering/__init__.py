@@ -20,6 +20,11 @@ from ..utils import (
 
 logger = get_logger('render')
 
+# Ceiling on the RGBA strip a single text region is typeset onto before it gets
+# warped into the canvas. The strip is padded to the destination box's aspect
+# ratio, so a pathological box/text combination can otherwise ask for gigabytes.
+MAX_RENDER_CANVAS_PIXELS = 40_000_000
+
 def parse_font_paths(path: str, default: List[str] = None) -> List[str]:
     if path:
         parsed = path.split(',')
@@ -44,6 +49,40 @@ def count_text_length(text: str) -> float:
         else:
             length += 1.0
     return length
+
+def quad_is_degenerate(pts: np.ndarray) -> bool:
+    """Whether a 4-point text box has lost the area a perspective warp needs.
+
+    Covers boxes folded onto a line or a point, self-crossing boxes whose signed
+    area cancels, and non-finite coordinates. All of them make cv2.findHomography
+    return a singular matrix, which cv2.warpPerspective then throws on.
+    """
+    quad = np.asarray(pts, dtype=np.float64).reshape(-1, 4, 2)
+    if not np.isfinite(quad).all():
+        return True
+    x, y = quad[..., 0], quad[..., 1]
+    area = np.abs(np.sum(x * np.roll(y, -1, axis=-1) - np.roll(x, -1, axis=-1) * y, axis=-1)) / 2
+    return bool(area.max() < 1.0)
+
+
+def clamp_quad_to_canvas(pts: np.ndarray, canvas_shape) -> np.ndarray:
+    """Keep a destination text box on the canvas without flattening it.
+
+    Clipping every corner on its own can pull an angled box flat against one
+    canvas edge, and a flat box has no homography. When that would happen the
+    overflow is kept instead and the warp simply clips what falls outside, the
+    behavior from before the canvas clamp existed.
+    """
+    quad = np.asarray(pts, dtype=np.float64).reshape(-1, 4, 2)
+    clipped = quad.copy()
+    clipped[..., 0] = clipped[..., 0].clip(0, canvas_shape[1] - 1)
+    clipped[..., 1] = clipped[..., 1].clip(0, canvas_shape[0] - 1)
+    clipped = clipped.astype(np.int64)
+    if quad_is_degenerate(clipped):
+        logger.warning('Clamping this text box to the image would collapse it, keeping the overflow')
+        return quad.astype(np.int64)
+    return clipped
+
 
 def resize_regions_to_font_size(img: np.ndarray, text_regions: List['TextBlock'], font_size_fixed: int, font_size_offset: int, font_size_minimum: int):  
     """
@@ -116,11 +155,7 @@ def resize_regions_to_font_size(img: np.ndarray, text_regions: List['TextBlock']
                         region.center, pts.reshape(1, -1), -region.angle,  
                         to_int=False  
                     ).reshape(-1, 4, 2)  
-                    # Keep the (possibly expanded) box within the canvas, otherwise
-                    # the text warp silently drops everything past the image edge
-                    dst_points[..., 0] = dst_points[..., 0].clip(0, img.shape[1] - 1)
-                    dst_points[..., 1] = dst_points[..., 1].clip(0, img.shape[0] - 1)
-                    dst_points = dst_points.astype(np.int64)
+                    dst_points = clamp_quad_to_canvas(dst_points, img.shape)
                     single_axis_expanded = True
                     # logger.debug(f"Successfully expanded horizontal text width: xfact={scale_x:.2f}")  
                 except Exception as e:  
@@ -150,11 +185,7 @@ def resize_regions_to_font_size(img: np.ndarray, text_regions: List['TextBlock']
                         region.center, pts.reshape(1, -1), -region.angle,  
                         to_int=False  
                     ).reshape(-1, 4, 2)  
-                    # Keep the (possibly expanded) box within the canvas, otherwise
-                    # the text warp silently drops everything past the image edge
-                    dst_points[..., 0] = dst_points[..., 0].clip(0, img.shape[1] - 1)
-                    dst_points[..., 1] = dst_points[..., 1].clip(0, img.shape[0] - 1)
-                    dst_points = dst_points.astype(np.int64)
+                    dst_points = clamp_quad_to_canvas(dst_points, img.shape)
                     single_axis_expanded = True
                     # logger.debug(f"Successfully expanded vertical text width: xfact={scale_x:.2f}")  
                 except Exception as e:  
@@ -215,12 +246,7 @@ def resize_regions_to_font_size(img: np.ndarray, text_regions: List['TextBlock']
                     scaled_unrotated_points = np.array(poly.exterior.coords[:4])  
 
                     dst_points = rotate_polygons(region.center, scaled_unrotated_points.reshape(1, -1), -region.angle, to_int=False).reshape(-1, 4, 2)  
-                    # Keep the (possibly expanded) box within the canvas, otherwise
-                    # the text warp silently drops everything past the image edge
-                    dst_points[..., 0] = dst_points[..., 0].clip(0, img.shape[1] - 1)
-                    dst_points[..., 1] = dst_points[..., 1].clip(0, img.shape[0] - 1)
-                    dst_points = dst_points.astype(np.int64)  
-                    dst_points = dst_points.reshape((-1, 4, 2))  
+                    dst_points = clamp_quad_to_canvas(dst_points, img.shape)
                     # logger.debug(f"Finished calculating scaled dst_points.")  
 
                 except Exception as e:  
@@ -281,7 +307,15 @@ def render(
     middle_pts = (dst_points[:, [1, 2, 3, 0]] + dst_points) / 2
     norm_h = np.linalg.norm(middle_pts[:, 1] - middle_pts[:, 3], axis=1)
     norm_v = np.linalg.norm(middle_pts[:, 2] - middle_pts[:, 0], axis=1)
+    # A box flattened onto a line has no aspect ratio to match and no usable
+    # homography, so there is nothing to composite onto the canvas.
+    if norm_h[0] <= 0 or norm_v[0] <= 0:
+        logger.warning(f'Skipping "{region.translation}": its text box collapsed to a line')
+        return img
     r_orig = np.mean(norm_h / norm_v)
+    if not np.isfinite(r_orig):
+        logger.warning(f'Skipping "{region.translation}": its text box has no usable shape')
+        return img
 
     # If configuration is set to non-automatic mode, use configuration to determine direction directly
     forced_direction = region._direction if hasattr(region, "_direction") else region.direction
@@ -322,7 +356,23 @@ def render(
             line_spacing,
         )
     h, w, _ = temp_box.shape
+    if h == 0 or w == 0:
+        logger.warning(f'Skipping "{region.translation}": the rendered text has no size')
+        return img
     r_temp = w / h
+
+    # Padding below stretches this strip to the destination box's aspect ratio,
+    # which inflates its area by up to max(r_orig, 1/r_orig). A tall narrow box
+    # with a long translation pushed the padded canvas past 2 GiB and the warp
+    # died on the allocation, so shrink the strip while it is still small.
+    if r_orig > 0:
+        padded_area = max(w * h, w * w / r_orig, h * h * r_orig)
+        if padded_area > MAX_RENDER_CANVAS_PIXELS:
+            scale = (MAX_RENDER_CANVAS_PIXELS / padded_area) ** 0.5
+            temp_box = cv2.resize(temp_box, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            h, w, _ = temp_box.shape
+            r_temp = w / h
+            logger.debug(f'Shrinking the text canvas for "{region.translation}" by {scale:.3f} to {w}x{h}')
 
     # Extend temporary box so that it has same ratio as original
     box = None  
@@ -405,6 +455,9 @@ def render(
     #src_pts[:, 1] = np.clip(np.round(src_pts[:, 1]), 0, enlarged_h * 2)
 
     M, _ = cv2.findHomography(src_points, dst_points, cv2.RANSAC, 5.0)
+    if M is None or not np.isfinite(M).all():
+        logger.warning(f'Skipping "{region.translation}": no homography maps its text box onto the image')
+        return img
     rgba_region = cv2.warpPerspective(box, M, (img.shape[1], img.shape[0]), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
     x, y, w, h = cv2.boundingRect(dst_points.astype(np.int32))
     canvas_region = rgba_region[y:y+h, x:x+w, :3]

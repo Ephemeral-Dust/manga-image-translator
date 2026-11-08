@@ -125,7 +125,12 @@ def build_blocks(
             TextBlock(
                 [pts],
                 [source_text],
-                font_size=y2 - y1,
+                # Glyph size fits the box's short side: box height for horizontal
+                # lines, box width for vertical columns (the renderer picks the
+                # direction from the box). Using height alone made a tall narrow
+                # column request a font taller than the column is wide, blowing
+                # the aspect-matched render canvas up to gigabytes.
+                font_size=min(x2 - x1, y2 - y1),
                 angle=region.angle,
                 prob=region.prob,
                 translation=translation,

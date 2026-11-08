@@ -411,6 +411,35 @@ def test_render_clamps_partially_outside_box(client):
     assert decode_png(resp.content).size == (64, 48)
 
 
+def test_render_tall_narrow_box_with_long_text(client):
+    """Vertical signboard geometry: a 10x95 column carrying a long Latin string.
+
+    The font size used to be the box height, so the typeset strip came out
+    hundreds of times wider than tall and the aspect-matched warp canvas
+    ballooned to gigabytes (a 500 from cv2.warpPerspective on a small machine).
+    """
+    img = make_png(150, 200)
+    resp = client.post("/render/image", json={
+        "image": data_uri(img),
+        "regions": [render_region(
+            minX=70, minY=50, maxX=80, maxY=145,
+            translation="Nishi Nihon Kanpan Shouten",
+        )],
+        "config": RENDER_CONFIG,
+    })
+    assert resp.status_code == 200, resp.text
+    result = np.asarray(decode_png(resp.content).convert("RGB"))
+    assert result.shape == (200, 150, 3)
+    painted = (result.reshape(-1, 3).min(axis=1) < 128).reshape(200, 150)  # black glyphs on white
+    ys, xs = np.nonzero(painted)
+    assert len(xs) > 100  # glyphs were painted
+    # The box widens (never grows past a few multiples) to fit the translation,
+    # and nothing may spill outside that expanded box.
+    assert 70 <= xs.min() and xs.max() <= 131
+    assert 49 <= ys.min() and ys.max() <= 146
+    assert len(xs) <= (131 - 70 + 1) * (146 - 49 + 1)
+
+
 def test_render_empty_regions_returns_input_unchanged(client):
     img = make_png(10, 6, color=(1, 2, 3))
     resp = client.post("/render/image", json={"image": data_uri(img), "regions": []})
