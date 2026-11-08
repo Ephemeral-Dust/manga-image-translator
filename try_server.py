@@ -7,9 +7,9 @@ Usage:
 
 With no file argument, the path in IMAGE_PATH below is used.
 Runs: /health, /translate/image, /translate/with-form/image,
-      /translate/json (chosen profile + generic for comparison),
-      /translate/batch/image. Results are saved for review; nothing else
-      in this script is a test suite check.
+      /translate/json, /translate/batch/image for the chosen profile, plus a
+      generic-profile image+JSON run for side-by-side comparison. Results are
+      saved for review; nothing else in this script is a test suite check.
 """
 
 import argparse
@@ -97,7 +97,8 @@ def main():
     parser.add_argument("--config", default="{}",
                         help='partial pipeline config as JSON (or a .json file path), e.g. '
                              '\'{"render":{"font_size_offset":-20}}\'')
-    parser.add_argument("--no-generic", action="store_true", help="skip the generic-profile JSON run")
+    parser.add_argument("--no-generic", action="store_true",
+                        help="skip the generic-profile image+JSON comparison run")
     parser.add_argument("--outdir", help="where to write results (default: <image>_server_test)")
     args = parser.parse_args()
 
@@ -156,6 +157,10 @@ def main():
 
     if not args.no_generic and args.profile != "generic":
         generic_payload = dict(payload, profile="generic")
+        gpng = call("POST /translate/image (profile generic)", f"{args.url}/translate/image",
+                    data=json.dumps(generic_payload).encode(), headers=headers)
+        if gpng:
+            save(outdir, f"{stem}_generic.png", gpng)
         gj = call("POST /translate/json (profile generic)", f"{args.url}/translate/json",
                   data=json.dumps(generic_payload).encode(), headers=headers)
         if gj:
