@@ -7,6 +7,7 @@ tests never download or load model weights.
 
 import io
 import os
+import zipfile
 
 # Must be set before the app's lifespan runs; the engine reads them at startup.
 os.environ["MIMG_WARMUP"] = "1"
@@ -14,6 +15,7 @@ os.environ["MIMG_USE_GPU"] = "0"
 os.environ["MIMG_MODELS_TTL"] = "3600"
 os.environ.pop("MIMG_API_KEY", None)
 
+import numpy as np
 import pytest
 from PIL import Image
 from fastapi.testclient import TestClient
@@ -70,6 +72,7 @@ def test_passthrough_image(client):
     })
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"] == "image/png"
+    assert resp.headers["x-mimg-profile"] == "manga"  # profile omitted == manga
     result = decode_png(resp.content)
     assert result.size == (12, 7)
 
@@ -104,8 +107,8 @@ def test_profile_manga_is_a_noop(client):
 
 
 def test_explicit_config_beats_profile(client):
-    # generic would pick paddle detection (a model download); an explicit
-    # detector in the request must still win.
+    # generic tunes the stock detector's thresholds; an explicit detector in
+    # the request must still win.
     resp = client.post("/translate/image", json={
         "image": data_uri(make_png(6, 6)),
         "config": PASSTHROUGH_CONFIG,
@@ -122,7 +125,9 @@ def test_unknown_profile_rejected(client):
         "profile": "does-not-exist",
     })
     assert resp.status_code == 422
-    assert "manga" in resp.json()["detail"]
+    detail = resp.json()["detail"]
+    assert "does-not-exist" in detail
+    assert "manga" in detail and "generic" in detail and "auto" in detail
 
 
 def test_bad_config_rejected(client):
@@ -142,6 +147,7 @@ def test_bad_image_rejected(client):
 
 
 def test_api_key_enforced():
+    saved_engine = getattr(app.state, "engine", None)
     os.environ["MIMG_API_KEY"] = "sekrit"
     try:
         with TestClient(app) as test_client:
@@ -162,3 +168,152 @@ def test_api_key_enforced():
             assert resp.status_code == 200, resp.text
     finally:
         os.environ.pop("MIMG_API_KEY", None)
+        # The nested TestClient's lifespan rewrote the shared app state (key
+        # and engine); undo it so later tests reusing the module client work.
+        app.state.api_key = None
+        app.state.engine = saved_engine
+
+
+# --- auto profile -------------------------------------------------------------
+
+def make_color_png(size=(8, 8)):
+    """Bright red square: colorfulness far above the auto threshold."""
+    arr = np.zeros((size[1], size[0], 3), np.uint8)
+    arr[..., 0] = 255
+    img = Image.fromarray(arr, "RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_auto_order_grayscale_vs_color():
+    from standalone.profiles import auto_order
+
+    assert auto_order(Image.open(io.BytesIO(make_png()))) == ("manga", "generic")
+    assert auto_order(Image.fromarray(
+        np.full((8, 8, 3), 128, np.uint8), "RGB")) == ("manga", "generic")
+    assert auto_order(Image.open(io.BytesIO(make_color_png()))) == ("generic", "manga")
+
+
+def test_auto_grayscale_cascade_order(client, monkeypatch):
+    from types import SimpleNamespace
+
+    from standalone.server import Engine
+
+    seen_rtl = []
+
+    async def never_detects(self, image, config):
+        seen_rtl.append(config.render.rtl)
+        return SimpleNamespace(text_regions=[], result=Image.new("RGB", image.size))
+
+    monkeypatch.setattr(Engine, "translate", never_detects)
+    resp = client.post("/translate/image", json={
+        "image": data_uri(make_png()),
+        "config": PASSTHROUGH_CONFIG,
+        "profile": "auto",
+    })
+    assert resp.status_code == 200, resp.text
+    assert seen_rtl == [True, False]  # manga tried first, then generic
+    assert resp.headers["x-mimg-profile"] == "generic"  # last attempt serves when none detect
+
+
+def test_auto_color_cascade_order(client, monkeypatch):
+    from types import SimpleNamespace
+
+    from standalone.server import Engine
+
+    seen_rtl = []
+
+    async def never_detects(self, image, config):
+        seen_rtl.append(config.render.rtl)
+        return SimpleNamespace(text_regions=[], result=Image.new("RGB", image.size))
+
+    monkeypatch.setattr(Engine, "translate", never_detects)
+    resp = client.post("/translate/image", json={
+        "image": data_uri(make_color_png()),
+        "config": PASSTHROUGH_CONFIG,
+        "profile": "auto",
+    })
+    assert resp.status_code == 200, resp.text
+    assert seen_rtl == [False, True]  # generic tried first, then manga
+    assert resp.headers["x-mimg-profile"] == "manga"  # last attempt serves when none detect
+
+
+def test_auto_cascade_stops_at_first_detection(client, monkeypatch):
+    from types import SimpleNamespace
+
+    from standalone.server import Engine
+
+    seen_rtl = []
+
+    async def always_detects(self, image, config):
+        seen_rtl.append(config.render.rtl)
+        return SimpleNamespace(text_regions=[object()], result=Image.new("RGB", image.size))
+
+    monkeypatch.setattr(Engine, "translate", always_detects)
+    resp = client.post("/translate/image", json={
+        "image": data_uri(make_png()),
+        "config": PASSTHROUGH_CONFIG,
+        "profile": "auto",
+    })
+    assert resp.status_code == 200, resp.text
+    assert seen_rtl == [True]  # manga detects first; generic never runs
+    assert resp.headers["x-mimg-profile"] == "manga"
+
+    seen_rtl.clear()
+    resp = client.post("/translate/image", json={
+        "image": data_uri(make_color_png()),
+        "config": PASSTHROUGH_CONFIG,
+        "profile": "auto",
+    })
+    assert resp.status_code == 200, resp.text
+    assert seen_rtl == [False]  # generic detects first; manga never runs
+    assert resp.headers["x-mimg-profile"] == "generic"
+
+
+def test_auto_real_pipeline_passthrough(client):
+    # Unpatched pipeline with detector=none: neither preset detects anything,
+    # so the last-attempted one serves. On grayscale that is generic.
+    resp = client.post("/translate/image", json={
+        "image": data_uri(make_png()),
+        "config": PASSTHROUGH_CONFIG,
+        "profile": "auto",
+    })
+    assert resp.status_code == 200, resp.text
+    assert decode_png(resp.content).size == (8, 8)
+    assert resp.headers["x-mimg-profile"] == "generic"
+
+
+def test_explicit_profile_header_has_no_fallback(client):
+    resp = client.post("/translate/image", json={
+        "image": data_uri(make_png()),
+        "config": PASSTHROUGH_CONFIG,
+        "profile": "generic",
+    })
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-mimg-profile"] == "generic"
+
+
+def test_json_endpoint_reports_profile(client):
+    resp = client.post("/translate/json", json={
+        "image": data_uri(make_png()),
+        "config": PASSTHROUGH_CONFIG,
+        "profile": "generic",
+    })
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"translations": []}
+    assert resp.headers["x-mimg-profile"] == "generic"
+
+
+def test_batch_reports_per_image_profiles(client):
+    resp = client.post("/translate/batch/image", json={
+        "images": [data_uri(make_color_png()), data_uri(make_png())],
+        "config": PASSTHROUGH_CONFIG,
+        "profile": "auto",
+    })
+    assert resp.status_code == 200, resp.text
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as archive:
+        assert sorted(archive.namelist()) == ["result_1.png", "result_2.png"]
+    # Passthrough detects nothing, so each image is served by the last preset
+    # tried: the color one ends on manga, the grayscale one on generic.
+    assert resp.headers["x-mimg-profile"] == "manga,generic"

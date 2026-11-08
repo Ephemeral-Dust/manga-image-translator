@@ -8,7 +8,8 @@ Python file to embed or run, not a distributed system.
 The bundled `server/` package keeps the multi-worker gateway and streaming
 progress protocol; this package keeps only what a client integration needs.
 Endpoint names and payload shapes match `server/main.py`, so client code written
-against the original server works here unchanged.
+against the original server works here unchanged. For the full client contract
+(schemas, profiles, response headers, error codes), see [API.md](API.md).
 
 ## Run
 
@@ -60,6 +61,15 @@ overrides the preset.
   sensitive thresholds (picks up small/missed text at the cost of merging
   multi-line blocks), lighter mask dilation, LTR rendering. Based on signage
   tests 2026-11-07; still tune `standalone/profiles.py` against more images.
+- `auto` — a cascade, not a preset: a millisecond colorfulness check picks the
+  likely winner (grayscale → manga first, colorful → generic first, threshold
+  tuned on measured manga vs photo samples), then reruns with the other preset
+  when the first detects no text. The first preset to find text serves.
+
+Every translate response carries an `X-MIMG-Profile` header naming the preset
+that actually served (CORS-exposed, so browser JS can read it); batch responses
+list the per-image profiles comma-joined. Unknown profile names are rejected
+with 422 and the list of known names.
 
 ## Concurrency
 

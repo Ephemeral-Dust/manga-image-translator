@@ -38,7 +38,8 @@ from pydantic import BaseModel, Field, ValidationError
 from manga_translator import Config, MangaTranslator
 
 from .images import to_pil_image
-from .profiles import PROFILES, apply_profile
+from . import profiles
+from .profiles import AUTO_PROFILE, PROFILES, apply_profile
 from .to_json import TranslationResponse, to_translation
 
 
@@ -131,17 +132,6 @@ class Engine:
             finally:
                 self.stage, self.finished = "idle", True
 
-    async def translate_batch(self, images, config) -> list:
-        async with self.lock:
-            results = []
-            for image in images:
-                self.stage, self.finished = "queued", False
-                try:
-                    results.append(await self.manga.translate(image, config))
-                finally:
-                    self.stage, self.finished = "idle", True
-            return results
-
 
 def build_config(raw, profile: Optional[str]) -> Config:
     """Validate a request-supplied config dict against the pipeline Config model.
@@ -159,9 +149,10 @@ def build_config(raw, profile: Optional[str]) -> Config:
     if not isinstance(raw, dict):
         raise HTTPException(422, "config must be a JSON object")
     try:
-        merged = apply_profile(raw, profile)
+        merged = apply_profile(raw, None if profile == AUTO_PROFILE else profile)
     except KeyError:
-        raise HTTPException(422, f"Unknown profile {profile!r}. Known profiles: {', '.join(sorted(PROFILES))}")
+        known = ", ".join(sorted(PROFILES)) + ", auto"
+        raise HTTPException(422, f"Unknown profile {profile!r}. Known profiles: {known}")
     try:
         return Config.model_validate(merged)
     except ValidationError as exc:
@@ -176,15 +167,18 @@ def png_bytes(ctx) -> bytes:
     return buf.getvalue()
 
 
-def zip_pngs(contexts: list) -> Response:
+def zip_pngs(contexts: list, profiles_used: Optional[List[str]] = None) -> Response:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as archive:
         for i, ctx in enumerate(contexts, 1):
             archive.writestr(f"result_{i}.png", png_bytes(ctx))
+    headers = {"Content-Disposition": 'attachment; filename="results.zip"'}
+    if profiles_used is not None:
+        headers["X-MIMG-Profile"] = served_profile_header(profiles_used)
     return Response(
         buf.getvalue(),
         media_type="application/zip",
-        headers={"Content-Disposition": 'attachment; filename="results.zip"'},
+        headers=headers,
     )
 
 
@@ -194,7 +188,7 @@ class TranslateRequest(BaseModel):
     config: dict = Field(default_factory=dict)
     """Partial pipeline config; unset fields come from the profile, then upstream defaults"""
     profile: Optional[str] = None
-    """Named preset for the config defaults (see profiles.py)"""
+    """Config defaults preset: "manga" (default), "generic", or "auto" (cascade; see profiles.py)"""
 
 
 class BatchTranslateRequest(BaseModel):
@@ -214,6 +208,54 @@ async def check_api_key(request: Request, x_api_key: Optional[str] = Header(defa
     expected = getattr(request.app.state, "api_key", None)
     if expected and x_api_key != expected:
         raise HTTPException(401, "Invalid or missing X-API-Key")
+
+
+def resolve_profiles(profile: Optional[str], image) -> List[str]:
+    """Ordered preset names to try for this request's profile."""
+    if profile is None:
+        return ["manga"]
+    if profile == AUTO_PROFILE:
+        return list(profiles.auto_order(image))
+    if profile in profiles.PROFILES:
+        return [profile]
+    known = ", ".join(sorted(profiles.PROFILES)) + ", auto"
+    raise HTTPException(422, f"Unknown profile {profile!r}. Known profiles: {known}")
+
+
+def served_profile_header(names) -> str:
+    """Comma-joined unique profile names, in order of first use."""
+    seen = []
+    for name in names:
+        if name not in seen:
+            seen.append(name)
+    return ",".join(seen)
+
+
+async def _translate_cascade(engine, pil_image, raw_config: dict, profile: Optional[str]):
+    """Run presets until one detects text; auto starts from the image's color cue.
+
+    Returns (ctx, served_profile). An explicit profile gets exactly one attempt.
+    """
+    names = resolve_profiles(profile, pil_image)
+    for name in names:
+        config = build_config(raw_config, name)
+        ctx = await engine.translate(pil_image, config)
+        if ctx.text_regions:
+            return ctx, name
+    return ctx, names[-1]  # nothing detected anywhere; last attempt's (unchanged) result serves
+
+
+def _parse_raw_config(raw) -> dict:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except json.JSONDecodeError as exc:
+            raise HTTPException(422, f"config is not valid JSON: {exc}")
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise HTTPException(422, "config must be a JSON object")
+    return raw
 
 
 @asynccontextmanager
@@ -239,14 +281,16 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    # lets browser JS read which profile actually served the request
+    expose_headers=["X-MIMG-Profile"],
 )
 
 
 async def _translate_one(request: Request, image, config_data, profile):
     engine = get_engine(request)
     pil_image = await to_pil_image(image)
-    config = build_config(config_data, profile)
-    return await engine.translate(pil_image, config)
+    raw = _parse_raw_config(config_data)
+    return await _translate_cascade(engine, pil_image, raw, profile)
 
 
 @app.get("/health")
@@ -269,8 +313,12 @@ async def config_schema():
 
 @app.post("/translate/image", response_class=Response, response_description="translated image, PNG")
 async def translate_image(data: TranslateRequest, request: Request, _: None = Depends(check_api_key)):
-    ctx = await _translate_one(request, data.image, data.config, data.profile)
-    return Response(png_bytes(ctx), media_type="image/png")
+    ctx, served = await _translate_one(request, data.image, data.config, data.profile)
+    return Response(
+        png_bytes(ctx),
+        media_type="image/png",
+        headers={"X-MIMG-Profile": served},
+    )
 
 
 @app.post("/translate/with-form/image", response_class=Response, response_description="translated image, PNG")
@@ -281,36 +329,53 @@ async def translate_image_form(
     profile: Optional[str] = Form(None),
     _: None = Depends(check_api_key),
 ):
-    ctx = await _translate_one(request, await image.read(), config, profile)
-    return Response(png_bytes(ctx), media_type="image/png")
+    ctx, served = await _translate_one(request, await image.read(), config, profile)
+    return Response(
+        png_bytes(ctx),
+        media_type="image/png",
+        headers={"X-MIMG-Profile": served},
+    )
 
 
 @app.post("/translate/json", response_model=TranslationResponse,
           response_description="text regions with inpainted backgrounds, Ichigo-inspired structure")
-async def translate_json(data: TranslateRequest, request: Request, _: None = Depends(check_api_key)):
-    ctx = await _translate_one(request, data.image, data.config, data.profile)
+async def translate_json(data: TranslateRequest, request: Request, response: Response, _: None = Depends(check_api_key)):
+    ctx, served = await _translate_one(request, data.image, data.config, data.profile)
+    response.headers["X-MIMG-Profile"] = served
     return to_translation(ctx)
 
 
 @app.post("/translate/with-form/json", response_model=TranslationResponse)
 async def translate_json_form(
     request: Request,
+    response: Response,
     image: UploadFile = File(...),
     config: str = Form("{}"),
     profile: Optional[str] = Form(None),
     _: None = Depends(check_api_key),
 ):
-    ctx = await _translate_one(request, await image.read(), config, profile)
+    ctx, served = await _translate_one(request, await image.read(), config, profile)
+    response.headers["X-MIMG-Profile"] = served
     return to_translation(ctx)
+
+
+async def _translate_batch(engine, pil_images, raw: dict, profile):
+    """Per-image cascade so auto can pick a starting preset for each image."""
+    contexts, served = [], []
+    for pil_image in pil_images:
+        ctx, name = await _translate_cascade(engine, pil_image, raw, profile)
+        contexts.append(ctx)
+        served.append(name)
+    return contexts, served
 
 
 @app.post("/translate/batch/image", response_class=Response, response_description="zip of PNG results")
 async def translate_batch_image(data: BatchTranslateRequest, request: Request, _: None = Depends(check_api_key)):
     engine = get_engine(request)
     images = [await to_pil_image(img) for img in data.images]
-    config = build_config(data.config, data.profile)
-    contexts = await engine.translate_batch(images, config)
-    return zip_pngs(contexts)
+    raw = _parse_raw_config(data.config)
+    contexts, served = await _translate_batch(engine, images, raw, data.profile)
+    return zip_pngs(contexts, served)
 
 
 @app.post("/translate/batch/with-form/image", response_class=Response, response_description="zip of PNG results")
@@ -323,6 +388,6 @@ async def translate_batch_image_form(
 ):
     engine = get_engine(request)
     pil_images = [await to_pil_image(await img.read()) for img in images]
-    config = build_config(config, profile)
-    contexts = await engine.translate_batch(pil_images, config)
-    return zip_pngs(contexts)
+    raw = _parse_raw_config(config)
+    contexts, served = await _translate_batch(engine, pil_images, raw, profile)
+    return zip_pngs(contexts, served)

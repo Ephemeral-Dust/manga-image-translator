@@ -5,7 +5,10 @@ need to know stage names. Values explicitly set in the request config always win
 over the profile.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
+
+import numpy as np
+from PIL import Image
 
 # The upstream Config defaults are already tuned for manga, so that profile is empty.
 PROFILES: Dict[str, Dict[str, Any]] = {
@@ -26,6 +29,36 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "render": {"rtl": False},
     },
 }
+
+# profile="auto" is a server-side cascade, not a preset: try one profile, and
+# rerun with the other when the first one detects no text. The starting point
+# comes from a millisecond-scale pixel statistic — manga is overwhelmingly
+# black-and-white, so a colorful input probably wants the generic preset first.
+COLORFULNESS_THRESHOLD = 25.0
+AUTO_PROFILE = "auto"
+AUTO_ORDER_GRAYSCALE = ("manga", "generic")
+AUTO_ORDER_COLOR = ("generic", "manga")
+
+
+def colorfulness(image: Image.Image) -> float:
+    """Hasler & Susstrunk colorfulness metric on a 64px thumbnail.
+
+    Exactly 0 for grayscale; measured 2026-11-07: synthetic B&W renders 0-16,
+    real-world color sign photos 36-44.
+    """
+    thumb = image.convert("RGB").copy()
+    thumb.thumbnail((64, 64))
+    arr = np.asarray(thumb, dtype=np.float64)
+    rg = arr[..., 0] - arr[..., 1]
+    yb = 0.5 * (arr[..., 0] + arr[..., 1]) - arr[..., 2]
+    return float(np.hypot(rg.var(), yb.var()) + 0.611 * np.hypot(rg.mean(), yb.mean()))
+
+
+def auto_order(image: Image.Image) -> Tuple[str, str]:
+    """Cascade order for profile="auto" on this image."""
+    if colorfulness(image) >= COLORFULNESS_THRESHOLD:
+        return AUTO_ORDER_COLOR
+    return AUTO_ORDER_GRAYSCALE
 
 
 def apply_profile(config: Dict[str, Any], profile: Optional[str]) -> Dict[str, Any]:

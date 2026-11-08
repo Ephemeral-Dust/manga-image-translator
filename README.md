@@ -238,7 +238,8 @@ docker run \
 ```
 
 The server starts on port [5003](http://localhost:5003). Open `/docs` for the OpenAPI
-documentation, and see `standalone/README.md` for the full API contract and examples.
+documentation, and see `standalone/API.md` (agent-readable contract) or
+`standalone/README.md` for setup and examples.
 
 ##### Using Nvidia GPU
 
@@ -301,7 +302,8 @@ $ python -m manga_translator local -v -i <path>
 $ python -m standalone --use-gpu
 # OpenAPI documentation: http://127.0.0.1:5003/docs
 ```
-Request formats, profiles, and client examples are documented in `standalone/README.md`.
+Request formats, profiles, and client examples are documented in `standalone/README.md`;
+the complete API contract (for programmatic clients and AI agents) is in `standalone/API.md`.
 
 ### Config-help Mode
 ```bash

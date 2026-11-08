@@ -8,8 +8,10 @@ Usage:
 With no file argument, the path in IMAGE_PATH below is used.
 Runs: /health, /translate/image, /translate/with-form/image,
       /translate/json, /translate/batch/image for the chosen profile, plus a
-      generic-profile image+JSON run for side-by-side comparison. Results are
-      saved for review; nothing else in this script is a test suite check.
+      generic-profile image+JSON run for side-by-side comparison (skipped for
+      generic/auto). Each OK line prints the X-MIMG-Profile header the server
+      sent. Results are saved for review; nothing else in this script is a
+      test suite check.
 """
 
 import argparse
@@ -35,21 +37,23 @@ def http(url, method="GET", data=None, headers=None):
     req = urllib.request.Request(url, method=method, data=data, headers=headers or {})
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            return resp.status, resp.read()
+            return resp.status, resp.read(), dict(resp.headers)
     except urllib.error.HTTPError as exc:
-        return exc.code, exc.read()
+        return exc.code, exc.read(), dict(exc.headers)
     except urllib.error.URLError as exc:
         sys.exit(f"cannot reach {url} ({exc.reason}) - start the server first (run.bat)")
 
 
 def call(label, url, method="POST", data=None, headers=None):
     start = time.perf_counter()
-    status, body = http(url, method, data, headers)
+    status, body, resp_headers = http(url, method, data, headers)
     elapsed = time.perf_counter() - start
     if status // 100 != 2:
         print(f"[FAIL] {label}: HTTP {status} {body.decode('utf-8', 'replace')[:400]}")
         return None
-    print(f"[ OK ] {label}: {elapsed:.1f}s, {len(body)} bytes")
+    served = next((v for k, v in resp_headers.items() if k.lower() == "x-mimg-profile"), None)
+    served = f", profile={served}" if served else ""
+    print(f"[ OK ] {label}: {elapsed:.1f}s, {len(body)} bytes{served}")
     return body
 
 
@@ -93,7 +97,7 @@ def main():
     parser.add_argument("image", nargs="?", default=IMAGE_PATH, help="image file to send")
     parser.add_argument("--url", default=os.environ.get("MIMG_URL", DEFAULT_URL))
     parser.add_argument("--api-key", default=os.environ.get("MIMG_API_KEY"))
-    parser.add_argument("--profile", default="manga", help="server profile (manga|generic)")
+    parser.add_argument("--profile", default="manga", help="server profile (manga|generic|auto)")
     parser.add_argument("--config", default="{}",
                         help='partial pipeline config as JSON (or a .json file path), e.g. '
                              '\'{"render":{"font_size_offset":-20}}\'')
@@ -129,7 +133,7 @@ def main():
 
     print(f"server: {args.url}  image: {args.image}  profile: {args.profile}  config: {json.dumps(user_config)}")
 
-    status, body = http(f"{args.url}/health", headers={"Accept": "application/json"})
+    status, body, _ = http(f"{args.url}/health", headers={"Accept": "application/json"})
     print(f"[{' OK ' if status == 200 else 'FAIL'}] /health: {body.decode('utf-8', 'replace')}")
 
     png = call(f"POST /translate/image (profile {args.profile})", f"{args.url}/translate/image",
@@ -155,7 +159,7 @@ def main():
         save(outdir, f"{stem}_{args.profile}.json", js)
         print_regions(js)
 
-    if not args.no_generic and args.profile != "generic":
+    if not args.no_generic and args.profile not in ("generic", "auto"):
         generic_payload = dict(payload, profile="generic")
         gpng = call("POST /translate/image (profile generic)", f"{args.url}/translate/image",
                     data=json.dumps(generic_payload).encode(), headers=headers)
