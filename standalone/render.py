@@ -82,7 +82,14 @@ def _estimate_colors(crop: np.ndarray) -> Tuple[Tuple[int, int, int], Tuple[int,
     _, labels, centers = cv2.kmeans(pixels, 2, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
     counts = np.bincount(labels.flatten(), minlength=2)
     bg_idx, fg_idx = (0, 1) if counts[0] >= counts[1] else (1, 0)
-    fg = tuple(int(c) for c in centers[fg_idx])
+    # The fg cluster is mostly anti-aliased edge pixels whose mean sits well
+    # inside the background; the glyph cores are the pixels farthest from the
+    # bg centre in luminance, so bias the fg pick toward that tail.
+    fg_pixels = pixels[labels.flatten() == fg_idx]
+    weights = np.array([0.299, 0.587, 0.114], dtype=np.float32)
+    deltas = np.abs(fg_pixels @ weights - centers[bg_idx] @ weights)
+    tail = fg_pixels[np.argsort(deltas)[::-1][: max(1, len(fg_pixels) // 3)]]
+    fg = tuple(int(c) for c in tail.mean(axis=0))
     bg = tuple(int(c) for c in centers[bg_idx])
     return fg, bg
 

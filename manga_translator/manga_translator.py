@@ -1389,7 +1389,9 @@ class MangaTranslator:
         else:
             output = await dispatch_rendering(ctx.img_inpainted, ctx.text_regions, self.font_path, config.render.font_size,
                                               config.render.font_size_offset,
-                                              config.render.font_size_minimum, not config.render.no_hyphenation, ctx.render_mask, config.render.line_spacing)
+                                              config.render.font_size_minimum, not config.render.no_hyphenation, ctx.render_mask, config.render.line_spacing,
+                                              stroke_width=config.render.stroke_width,
+                                              contrast_aware_stroke=config.render.contrast_aware_stroke)
         return output
 
     def _result_path(self, path: str) -> str:

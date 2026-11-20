@@ -1,7 +1,7 @@
 import os
 import cv2
 import numpy as np
-from typing import List
+from typing import List, Optional
 from shapely import affinity
 from shapely.geometry import Polygon
 from tqdm import tqdm
@@ -38,6 +38,21 @@ def fg_bg_compare(fg, bg):
     if color_difference(fg, bg) < 30:
         bg = (255, 255, 255) if fg_avg <= 127 else (0, 0, 0)
     return fg, bg
+
+def sample_canvas_bg(img: np.ndarray, dst_points) -> tuple | None:
+    """Mean colour of the inpainted canvas inside a text box.
+
+    The stored outline colour was estimated before inpainting; this is what the
+    text will actually sit on. A 5px erosion keeps box edges (neighbouring text
+    halos) from polluting the sample."""
+    quad = np.asarray(dst_points, dtype=np.int32).reshape(-1, 2)
+    mask = np.zeros(img.shape[:2], dtype=np.uint8)
+    cv2.fillConvexPoly(mask, quad, 1)
+    mask = cv2.erode(mask, np.ones((5, 5), np.uint8))
+    inner = img[mask > 0]
+    if len(inner) == 0:
+        return None
+    return tuple(float(c) for c in inner.mean(axis=0))
 
 def count_text_length(text: str) -> float:
     """Calculate text length, treating っッぁぃぅぇぉ as 0.5 characters"""
@@ -271,7 +286,9 @@ async def dispatch(
     hyphenate: bool = True,
     render_mask: np.ndarray = None,
     line_spacing: int = None,
-    disable_font_border: bool = False
+    disable_font_border: bool = False,
+    stroke_width: Optional[float] = None,
+    contrast_aware_stroke: bool = False,
     ) -> np.ndarray:
 
     text_render.set_font(font_path)
@@ -287,7 +304,8 @@ async def dispatch(
         if render_mask is not None:
             # set render_mask to 1 for the region that is inside dst_points
             cv2.fillConvexPoly(render_mask, dst_points.astype(np.int32), 1)
-        img = render(img, region, dst_points, hyphenate, line_spacing, disable_font_border)
+        img = render(img, region, dst_points, hyphenate, line_spacing, disable_font_border,
+                     stroke_width=stroke_width, contrast_aware_stroke=contrast_aware_stroke)
     return img
 
 def render(
@@ -296,13 +314,26 @@ def render(
     dst_points,
     hyphenate,
     line_spacing,
-    disable_font_border
+    disable_font_border,
+    stroke_width=None,
+    contrast_aware_stroke=False,
 ):
     fg, bg = region.get_font_colors()
     fg, bg = fg_bg_compare(fg, bg)
 
     if disable_font_border :
         bg = None
+
+    if contrast_aware_stroke and bg is not None:
+        # The outline was colour-matched to the pre-inpaint pixels, but the box
+        # is painted over first: an outline matching the inpainted backdrop
+        # separates nothing, and marginal fg-on-bg contrast then leaves the
+        # text unreadable. Repaint the outline against the real backdrop.
+        actual_bg = sample_canvas_bg(img, dst_points)
+        if (actual_bg is not None
+                and color_difference(bg, actual_bg) < 15
+                and color_difference(fg, actual_bg) < 40):
+            bg = (255, 255, 255) if np.mean(actual_bg) <= 127 else (0, 0, 0)
 
     middle_pts = (dst_points[:, [1, 2, 3, 0]] + dst_points) / 2
     norm_h = np.linalg.norm(middle_pts[:, 1] - middle_pts[:, 3], axis=1)
@@ -344,6 +375,7 @@ def render(
             region.target_lang,
             hyphenate,
             line_spacing,
+            stroke_width=stroke_width,
         )
     else:
         temp_box = text_render.put_text_vertical(
@@ -354,6 +386,7 @@ def render(
             fg,
             bg,
             line_spacing,
+            stroke_width=stroke_width,
         )
     h, w, _ = temp_box.shape
     if h == 0 or w == 0:

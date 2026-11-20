@@ -161,6 +161,10 @@ class RenderConfig(BaseModel):
     """Align rendered text"""
     disable_font_border: bool = False
     """Disable font border"""
+    stroke_width: Optional[float] = None
+    """Outline thickness as a fraction of the font size for the default renderer. If None, uses the built-in default (0.07); 0 removes the outline."""
+    contrast_aware_stroke: bool = False
+    """Re-check each text box against the inpainted canvas beneath it before rendering: when the outline would be the same colour as that backdrop and the text is only marginally visible on it, repaint the outline black or white so the text stays readable."""
     font_size_offset: int = 0
     """Offset font size by a given amount, positive number increase font size and vice versa"""
     font_size_minimum: int = -1

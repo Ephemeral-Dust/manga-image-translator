@@ -152,7 +152,7 @@ upstream defaults** — any key you set in `config` always wins.
 | Profile | Behavior |
 |---|---|
 | `"manga"` (default) | Upstream defaults, manga-tuned (B&W panels, RTL panel flow, higher detection thresholds). |
-| `"generic"` | For screenshots/UI/real-world text: same models, but detector thresholds `text_threshold 0.4, box_threshold 0.5, unclip_ratio 1.5` (catches small/missed text; merges multi-line blocks), lighter inpaint mask (`mask_dilation_offset 4`), left-to-right rendering (`render.rtl false`). |
+| `"generic"` | For screenshots/UI/real-world text: same models, but detector thresholds `text_threshold 0.4, box_threshold 0.5, unclip_ratio 1.5` (catches small/missed text), gamma-corrected detection input (`det_gamma_correct true`, helps washed-out photos), line-split tolerance `merge_split_gamma 0.2` (neighbouring text lines become separate regions instead of one merged block), lighter inpaint mask (`mask_dilation_offset 4`), left-to-right rendering (`render.rtl false`), and contrast-aware outlines (`render.contrast_aware_stroke true`, see section 7 knobs). |
 | `"auto"` | Not a preset — a per-image cascade: a millisecond colorfulness check (Hasler-Süsstrunk on a 64px thumbnail, threshold 25.0) orders two full attempts: grayscale → `manga` then `generic`; colorful → `generic` then `manga`. The **first preset that detects ≥1 text region serves**; the other never runs. If neither detects anything, the last-attempted preset serves (unchanged image). Cost: a wrong first guess doubles latency for that image. Known weakness: color manga (webtoons) start on `generic` and keep its result even when `manga` would typeset better — fallback triggers only on zero detections. |
 
 - Explicit profiles never cascade — exactly one attempt, no fallback.
@@ -221,6 +221,8 @@ Knobs a client is most likely to touch:
 | `inpainter.inpainter` | `"lama_large"` | Also: `lama_mpe`, `sd`, `none`, `original`. |
 | `detector.text_threshold` / `box_threshold` / `unclip_ratio` | `0.5` / `0.7` / `2.3` | Detection sensitivity; `generic` profile lowers these (see section 5). |
 | `render.rtl` | `true` | Region ordering; set `false` for LTR content. |
+| `render.stroke_width` | `null` | Outline thickness as a fraction of font size (default renderer; built-in default ≈`0.07`). Set `0` for no outline, `0.15` for a heavier one. |
+| `render.contrast_aware_stroke` | `false` (`true` in `generic`) | If the outline colour would blend into the inpainted backdrop and the text itself is only marginally visible on it, the outline is repainted black or white so the text stays readable. |
 | `colorization.colorizer` | `"none"` | Optional B&W→color stage (`mc2`). |
 | `upscale.upscale_ratio` | off | Optional upscale before OCR for small text. |
 
@@ -362,7 +364,7 @@ straight back:
 | `text` | optional | Language-keyed source-text map, same shape as section 6. A non-target-language entry is used for mask fitting (deciding which pixels get painted out). |
 | `angle` | optional (0) | Text angle in degrees — carry over from `/translate/json` unchanged. |
 | `prob` | optional (1.0) | OCR confidence; unused when rendering. |
-| `text_color` | optional | `{"fg":[r,g,b],"bg":[r,g,b]}`. Omit and the server estimates both from the region's pixels. |
+| `text_color` | optional | `{"fg":[r,g,b],"bg":[r,g,b]}`. Omit and the server estimates both from the region's pixels. `bg` is the outline color; when `render.contrast_aware_stroke` is on (`generic` profile default) the server re-checks it against the inpainted backdrop and repaints the outline black/white if it would vanish into it. |
 | `is_bulleted_list` | optional | Accepted and ignored — recomputed from the text. |
 | `background` | optional | Accepted and ignored — inpainting always regenerates it from the input image. |
 

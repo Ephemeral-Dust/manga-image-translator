@@ -12,6 +12,7 @@ from manga_translator.rendering import (
     quad_is_degenerate,
     render as render_single,
     resize_regions_to_font_size,
+    sample_canvas_bg,
     text_render,
 )
 from manga_translator.utils import (
@@ -182,3 +183,68 @@ def test_render_single_maps_quads_with_exact_perspective_transform(monkeypatch):
     out = render_single(img.copy(), make_flat_test_region(), box, True, None, False)
     assert int(np.count_nonzero(out)) > 0
     assert calls == [((4, 2), (4, 2), np.dtype('float32'))]
+
+
+def make_stroke_test_region(fg=(255, 255, 255), bg=(255, 0, 0), translation='Hello world', font_size=40):
+    region = TextBlock([[[10, 10], [200, 10], [10, 60], [200, 60]]], texts=['source'],
+                       translation=translation, font_size=font_size)
+    region.target_lang = 'ENG'
+    region.set_font_colors(list(fg), list(bg))
+    return region
+
+
+STROKE_TEST_BOX = np.array([[[10, 10], [210, 10], [210, 70], [10, 70]]], dtype=np.int64)
+
+
+def test_sample_canvas_bg_reads_the_box_interior():
+    img = np.full((100, 100, 3), 77, dtype=np.uint8)
+    quad = np.array([[[10, 10], [60, 10], [60, 60], [10, 60]]], dtype=np.int32)
+    assert sample_canvas_bg(img, quad) == pytest.approx((77.0, 77.0, 77.0))
+    # A box smaller than the 5px erosion margin has no trustworthy interior.
+    tiny = np.array([[[10, 10], [12, 10], [12, 12], [10, 12]]], dtype=np.int32)
+    assert sample_canvas_bg(img, tiny) is None
+
+
+def test_render_single_stroke_width_controls_the_outline():
+    """render.stroke_width scales the outline (default 0.07); 0 renders the
+    glyphs alone instead of dropping the text, as boundingRect of the empty
+    border map used to do."""
+    img = np.zeros((300, 400, 3), dtype=np.uint8)
+    region = make_stroke_test_region()  # white glyphs, red outline
+
+    def red_pixels(out):
+        return int(np.count_nonzero((out[..., 0] > 200) & (out[..., 1] < 60) & (out[..., 2] < 60)))
+
+    default = render_single(img.copy(), region, STROKE_TEST_BOX, True, None, False)
+    thick = render_single(img.copy(), region, STROKE_TEST_BOX, True, None, False, stroke_width=0.3)
+    none = render_single(img.copy(), region, STROKE_TEST_BOX, True, None, False, stroke_width=0)
+
+    assert int(np.count_nonzero(default)) > 0
+    assert red_pixels(thick) > red_pixels(default) > 0
+    assert red_pixels(none) == 0
+    assert int(np.count_nonzero(none)) > 0  # outline-less text is still painted
+
+
+def test_render_single_contrast_aware_stroke_repaints_invisible_outline():
+    """The outline colour is estimated before inpainting. When it matches the
+    inpainted backdrop and the text itself is only marginal on it, the flag
+    repaints the outline against the real canvas; without the flag the
+    render is untouched."""
+    img = np.full((300, 400, 3), 121, dtype=np.uint8)  # inpainted backdrop
+    # fg/outline ΔE ≈ 37: survives fg_bg_compare's 30 floor, inside the flag's 40
+    region = make_stroke_test_region(fg=(220, 220, 220), bg=(121, 121, 121))
+
+    def white_pixels(out):
+        return int(np.count_nonzero((out > 240).all(axis=2)))
+
+    off = render_single(img.copy(), region, STROKE_TEST_BOX, True, None, False)
+    on = render_single(img.copy(), region, STROKE_TEST_BOX, True, None, False, contrast_aware_stroke=True)
+
+    assert white_pixels(off) == 0  # default: outline same colour as backdrop
+    assert white_pixels(on) > 0
+    assert int(np.count_nonzero(on != off)) > 0
+
+    # High-contrast text keeps its designed outline even with the flag on.
+    crisp = make_stroke_test_region(fg=(255, 255, 255), bg=(0, 0, 0))
+    kept = render_single(img.copy(), crisp, STROKE_TEST_BOX, True, None, False, contrast_aware_stroke=True)
+    assert int(np.count_nonzero((kept[..., 0] < 60) & (kept[..., 1] < 60) & (kept[..., 2] < 60))) > 0  # black outline painted

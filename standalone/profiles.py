@@ -37,7 +37,14 @@ PROFILES: Dict[str, Dict[str, Any]] = {
             "merge_split_gamma": 0.2,
         },
         "mask_dilation_offset": 4,
-        "render": {"rtl": False},
+        "render": {
+            "rtl": False,
+            # Clients supply colours estimated from the *original* pixels (or
+            # none at all); after inpainting the backdrop is surrounding
+            # texture, so an outline that matched the old pixels can vanish
+            # into it. Re-check against the actual canvas before typesetting.
+            "contrast_aware_stroke": True,
+        },
     },
 }
 

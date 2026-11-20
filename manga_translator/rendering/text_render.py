@@ -450,7 +450,7 @@ def put_char_vertical(font_size: int, cdpt: str, pen_l: Tuple[int, int], canvas_
         
         # 设置描边半径和样式  
         # Set stroke radius and style  
-        stroke_radius = 64 * max(int(0.07 * font_size), 1)  # 基于字体大小的比例值 / Proportional value based on font size  
+        stroke_radius = 64 * max(int(border_size), 1)  # Follow the caller's border size / 跟随调用方的描边宽度  
         stroker.set(stroke_radius, freetype.FT_STROKER_LINEJOIN_ROUND, freetype.FT_STROKER_LINECAP_ROUND, 0)  
         
         # 应用描边效果  
@@ -538,11 +538,17 @@ def put_char_vertical(font_size: int, cdpt: str, pen_l: Tuple[int, int], canvas_
     # Return vertical advance value  
     return char_offset_y  
 
-def put_text_vertical(font_size: int, text: str, h: int, alignment: str, fg: Tuple[int, int, int], bg: Optional[Tuple[int, int, int]], line_spacing: int):
+def put_text_vertical(font_size: int, text: str, h: int, alignment: str, fg: Tuple[int, int, int], bg: Optional[Tuple[int, int, int]], line_spacing: int, stroke_width: Optional[float] = None):
     text = compact_special_symbols(text)
     if not text :
         return
-    bg_size = int(max(font_size * 0.07, 1)) if bg is not None else 0
+    if bg is None:
+        bg_size = 0
+    else:
+        stroke_ratio = 0.07 if stroke_width is None else max(stroke_width, 0.0)
+        bg_size = int(max(font_size * stroke_ratio, 1)) if stroke_ratio > 0 else 0
+        if bg_size == 0:
+            bg = None  # a zero stroke means glyphs without an outline
     spacing_x = int(font_size * (line_spacing or 0.2))
 
     # make large canvas
@@ -576,7 +582,9 @@ def put_text_vertical(font_size: int, text: str, h: int, alignment: str, fg: Tup
     canvas_border = np.clip(canvas_border, 0, 255)
     line_box = add_color(canvas_text, fg, canvas_border, bg)
     # rect
-    x, y, w, h = cv2.boundingRect(canvas_border)
+    # Crop on the alpha channel: with no stroke the border map is empty, and
+    # boundingRect of it would return an empty strip and drop the text.
+    x, y, w, h = cv2.boundingRect(line_box[:, :, 3])
     return line_box[y:y+h, x:x+w]
 
 def select_hyphenator(lang: str):
@@ -988,7 +996,7 @@ def put_char_horizontal(font_size: int, cdpt: str, pen_l: Tuple[int, int], canva
         
         # Configure stroker 配置描边器
         stroker = freetype.Stroker()
-        stroke_radius = 64 * max(int(0.07 * font_size), 1)  # In 1/64 pixel units 单位: 1/64 像素
+        stroke_radius = 64 * max(int(border_size), 1)  # Follow the caller's border size, in 1/64 px units
         stroker.set(stroke_radius, 
                    freetype.FT_STROKER_LINEJOIN_ROUND,  # Round joins 圆角连接
                    freetype.FT_STROKER_LINECAP_ROUND,   # Round line caps 圆头线帽
@@ -1099,11 +1107,18 @@ def put_char_horizontal(font_size: int, cdpt: str, pen_l: Tuple[int, int], canva
 
 def put_text_horizontal(font_size: int, text: str, width: int, height: int, alignment: str,
                         reversed_direction: bool, fg: Tuple[int, int, int], bg: Tuple[int, int, int],
-                        lang: str = 'en_US', hyphenate: bool = True, line_spacing: int = 0):
+                        lang: str = 'en_US', hyphenate: bool = True, line_spacing: int = 0,
+                        stroke_width: Optional[float] = None):
     text = compact_special_symbols(text)
     if not text :
         return
-    bg_size = int(max(font_size * 0.07, 1)) if bg is not None else 0
+    if bg is None:
+        bg_size = 0
+    else:
+        stroke_ratio = 0.07 if stroke_width is None else max(stroke_width, 0.0)
+        bg_size = int(max(font_size * stroke_ratio, 1)) if stroke_ratio > 0 else 0
+        if bg_size == 0:
+            bg = None  # a zero stroke means glyphs without an outline
     spacing_y = int(font_size * (line_spacing or 0.01))
 
     # calc
@@ -1153,7 +1168,9 @@ def put_text_horizontal(font_size: int, text: str, width: int, height: int, alig
     canvas_border = np.clip(canvas_border, 0, 255)
     line_box = add_color(canvas_text, fg, canvas_border, bg)
 
-    x, y, w, h = cv2.boundingRect(canvas_border)
+    # Crop on the alpha channel: with no stroke the border map is empty, and
+    # boundingRect of it would return an empty strip and drop the text.
+    x, y, w, h = cv2.boundingRect(line_box[:, :, 3])
     return line_box[y:y+h, x:x+w]
 
 # def put_text(img: np.ndarray, text: str, line_count: int, x: int, y: int, w: int, h: int, fg: Tuple[int, int, int], bg: Optional[Tuple[int, int, int]]):
