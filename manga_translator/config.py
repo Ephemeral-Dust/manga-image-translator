@@ -166,6 +166,7 @@ class RenderConfig(BaseModel):
     contrast_aware_stroke: bool = False
     """Re-check each text box against the inpainted canvas beneath it before rendering: when the outline would be the same colour as that backdrop and the text is only marginally visible on it, repaint the outline black or white so the text stays readable."""
     shrink_to_fit: bool = False
+    kinsoku: bool = False
     """When the translated text does not fit its original box, step the font size down until it does instead of growing the box or letting the text warp down with it. The box is only grown when even the minimum font size would not fit."""
     font_size_offset: int = 0
     """Offset font size by a given amount, positive number increase font size and vice versa"""

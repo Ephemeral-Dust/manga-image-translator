@@ -305,3 +305,41 @@ def test_resize_regions_shrink_to_fit_prefers_font_over_box_growth():
     grown = resize_regions_to_font_size(img, [region], None, 0, 10, shrink_to_fit=True)[0]
     assert region.font_size == 40
     assert quad_width(grown) > quad_width(region.min_rect)
+
+
+# --- kinsoku (禁則処理) CJK line breaking ------------------------------------
+
+
+def test_apply_kinsoku_seats_boundary_characters():
+    fs = 20
+    # A forbidden line-start character (full stop) is pulled onto the line above.
+    assert text_render.apply_kinsoku_line_breaking(['す' * 5, '。' + 'す' * 3], fs, 5 * fs) \
+        == ['す' * 5 + '。', 'す' * 3]
+    # An opening bracket stranded at a line end is pushed down instead.
+    assert text_render.apply_kinsoku_line_breaking(['す' * 5 + '「', 'す' * 2], fs, 5 * fs) \
+        == ['す' * 5, '「' + 'す' * 2]
+    # Hanging-punctuation budget is one character: the surplus mark stays put,
+    # and a line vacated completely is dropped rather than left blank.
+    assert text_render.apply_kinsoku_line_breaking(['す' * 5, '。、す' * 1], fs, 5 * fs) \
+        == ['す' * 5 + '。', '、す']
+    assert text_render.apply_kinsoku_line_breaking(['す' * 5, '。'], fs, 5 * fs) == ['す' * 5 + '。']
+    # Legal boundaries are left alone.
+    assert text_render.apply_kinsoku_line_breaking(['す' * 5, 'す' * 5], fs, 5 * fs) \
+        == ['す' * 5, 'す' * 5]
+
+
+def test_calc_horizontal_kinsoku_moves_breaks_not_content():
+    fs = 20
+    text = 'す' * 10 + '。' + 'す' * 10   # 21 chars, 5 fit per 100px line
+    kwargs = dict(max_width=100, max_height=10 * fs, language='ja_JP', hyphenate=False)
+
+    plain, _ = text_render.calc_horizontal(fs, text, **kwargs)
+    assert any(line[0] == '。' for line in plain[1:])  # default happily breaks before it
+
+    fixed, widths = text_render.calc_horizontal(fs, text, kinsoku=True, **kwargs)
+    assert ''.join(fixed).replace('-', '') == text  # same content, only moved
+    assert all(line[0] not in text_render.KINSOKU_LINE_START_FORBIDDEN for line in fixed)
+    assert all(line[-1] not in text_render.KINSOKU_LINE_END_FORBIDDEN for line in fixed)
+    # Hanging punctuation: at most one character past the line limit.
+    assert all(w <= 100 + fs for w in widths)
+    assert len(fixed) <= len(plain)  # emptying a line may even save one

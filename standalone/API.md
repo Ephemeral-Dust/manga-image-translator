@@ -228,6 +228,7 @@ Knobs a client is most likely to touch:
 | `render.stroke_width` | `null` | Outline thickness as a fraction of font size (default renderer; built-in default ≈`0.07`). Set `0` for no outline, `0.15` for a heavier one. |
 | `render.contrast_aware_stroke` | `false` (`true` in `generic`) | If the outline colour would blend into the inpainted backdrop and the text itself is only marginally visible on it, the outline is repainted black or white so the text stays readable. |
 | `render.shrink_to_fit` | `false` (`true` in `generic`) | When the translation doesn't fit its box, step the font size down until it does instead of growing the box or warping the text smaller. The box is only grown when even the minimum font size wouldn't fit. |
+| `render.kinsoku` | `false` | Japanese line-breaking rules (禁則処理): sentence-ending punctuation, closing brackets, small kana and the like are never left at the **start** of a line, and opening brackets never at the **end** — such characters are moved onto the neighbouring line, which may hang up to one character past the box edge. Only affects CJK translations; no-op for space-separated languages. |
 | `colorization.colorizer` | `"none"` | Optional B&W→color stage (`mc2`). |
 | `upscale.upscale_ratio` | off | Optional upscale before OCR for small text. |
 

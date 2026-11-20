@@ -1432,7 +1432,8 @@ class MangaTranslator:
                                               config.render.font_size_minimum, not config.render.no_hyphenation, ctx.render_mask, config.render.line_spacing,
                                               stroke_width=config.render.stroke_width,
                                               contrast_aware_stroke=config.render.contrast_aware_stroke,
-                                              shrink_to_fit=config.render.shrink_to_fit)
+                                              shrink_to_fit=config.render.shrink_to_fit,
+                                               kinsoku=config.render.kinsoku)
         return output
 
     def _result_path(self, path: str) -> str:

@@ -99,8 +99,8 @@ def clamp_quad_to_canvas(pts: np.ndarray, canvas_shape) -> np.ndarray:
     return clipped
 
 
-def _text_fits_horizontal(font_size: int, text: str, w: float, h: float, lang: str, hyphenate: bool) -> bool:
-    lines, widths = text_render.calc_horizontal(font_size, text, w, h, lang, hyphenate)
+def _text_fits_horizontal(font_size: int, text: str, w: float, h: float, lang: str, hyphenate: bool, kinsoku: bool = False) -> bool:
+    lines, widths = text_render.calc_horizontal(font_size, text, w, h, lang, hyphenate, kinsoku=kinsoku)
     if not lines:
         return True
     # calc_horizontal inflates its own width limit on overflow, so validate
@@ -117,7 +117,7 @@ def _text_fits_vertical(font_size: int, text: str, w: float, h: float) -> bool:
 
 
 def shrink_font_size_to_fit(region: 'TextBlock', target_font_size: int, font_size_minimum: int,
-                            hyphenate: bool = True):
+                            hyphenate: bool = True, kinsoku: bool = False):
     """Largest font size <= target whose text fits the region's own box.
 
     Returns target_font_size when it already fits and None when the text does
@@ -133,7 +133,7 @@ def shrink_font_size_to_fit(region: 'TextBlock', target_font_size: int, font_siz
         def fits(fs): return _text_fits_vertical(fs, text, w, h)
     else:
         lang = getattr(region, "target_lang", "en_US")
-        def fits(fs): return _text_fits_horizontal(fs, text, w, h, lang, hyphenate)
+        def fits(fs): return _text_fits_horizontal(fs, text, w, h, lang, hyphenate, kinsoku)
     if fits(target_font_size):
         return target_font_size
     if not fits(font_size_minimum):
@@ -149,7 +149,7 @@ def shrink_font_size_to_fit(region: 'TextBlock', target_font_size: int, font_siz
 
 
 def resize_regions_to_font_size(img: np.ndarray, text_regions: List['TextBlock'], font_size_fixed: int, font_size_offset: int, font_size_minimum: int,
-                                shrink_to_fit: bool = False, hyphenate: bool = True):
+                                shrink_to_fit: bool = False, hyphenate: bool = True, kinsoku: bool = False):
     """
     Adjust text region size to accommodate font size and translated text length.
     
@@ -162,6 +162,8 @@ def resize_regions_to_font_size(img: np.ndarray, text_regions: List['TextBlock']
         shrink_to_fit: Try shrinking the font into the original box before
             growing the box or relying on the warp to downscale the glyphs
         hyphenate: Whether hyphenation may be assumed when probing fit
+        kinsoku: Whether CJK line breaks must obey Japanese line-start/line-end
+            forbidden-character rules (禁則処理)
 
     Returns:  
         List of adjusted text region bounding boxes
@@ -196,7 +198,7 @@ def resize_regions_to_font_size(img: np.ndarray, text_regions: List['TextBlock']
         # Shrink-to-fit: prefer a smaller font inside the original box over
         # growing the box (or letting the warp silently downscale the glyphs).
         if shrink_to_fit:
-            fitted = shrink_font_size_to_fit(region, target_font_size, font_size_minimum, hyphenate)
+            fitted = shrink_font_size_to_fit(region, target_font_size, font_size_minimum, hyphenate, kinsoku)
             if fitted is not None:
                 target_font_size = fitted
                 dst_points_list.append(region.min_rect)
@@ -216,7 +218,8 @@ def resize_regions_to_font_size(img: np.ndarray, text_regions: List['TextBlock']
                 region.translation,
                 max_width=region.unrotated_size[0],
                 max_height=region.unrotated_size[1],
-                language=getattr(region, "target_lang", "en_US")
+                language=getattr(region, "target_lang", "en_US"),
+                kinsoku=kinsoku,
             )
             needed_rows = len(line_text_list)
             # logger.debug(f"Needed rows: {needed_rows}")                
@@ -353,6 +356,7 @@ async def dispatch(
     stroke_width: Optional[float] = None,
     contrast_aware_stroke: bool = False,
     shrink_to_fit: bool = False,
+    kinsoku: bool = False,
     ) -> np.ndarray:
 
     text_render.set_font(font_path)
@@ -360,7 +364,7 @@ async def dispatch(
 
     # Resize regions that are too small
     dst_points_list = resize_regions_to_font_size(img, text_regions, font_size_fixed, font_size_offset, font_size_minimum,
-                                                  shrink_to_fit=shrink_to_fit, hyphenate=hyphenate)
+                                                  shrink_to_fit=shrink_to_fit, hyphenate=hyphenate, kinsoku=kinsoku)
 
     # TODO: Maybe remove intersections
 
@@ -370,7 +374,8 @@ async def dispatch(
             # set render_mask to 1 for the region that is inside dst_points
             cv2.fillConvexPoly(render_mask, dst_points.astype(np.int32), 1)
         img = render(img, region, dst_points, hyphenate, line_spacing, disable_font_border,
-                     stroke_width=stroke_width, contrast_aware_stroke=contrast_aware_stroke)
+                     stroke_width=stroke_width, contrast_aware_stroke=contrast_aware_stroke,
+                     kinsoku=kinsoku)
     return img
 
 def render(
@@ -382,6 +387,7 @@ def render(
     disable_font_border,
     stroke_width=None,
     contrast_aware_stroke=False,
+    kinsoku=False,
 ):
     fg, bg = region.get_font_colors()
     fg, bg = fg_bg_compare(fg, bg)
@@ -441,6 +447,7 @@ def render(
             hyphenate,
             line_spacing,
             stroke_width=stroke_width,
+            kinsoku=kinsoku,
         )
     else:
         temp_box = text_render.put_text_vertical(

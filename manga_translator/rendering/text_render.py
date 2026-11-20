@@ -617,10 +617,55 @@ def get_char_offset_x(font_size: int, cdpt: str):
 def get_string_width(font_size: int, text: str):
     return sum([get_char_offset_x(font_size, c) for c in text])
 
-def calc_horizontal(font_size: int, text: str, max_width: int, max_height: int, language: str = 'en_US', hyphenate: bool = True) -> Tuple[List[str], List[int]]:
+# Characters that Japanese typesetting forbids at the start of a line
+# (sentence-ending marks, closing brackets, small kana, iteration marks) or at
+# the end of one (opening brackets). Ambiguous ASCII quotes are left out.
+KINSOKU_LINE_START_FORBIDDEN = frozenset(
+    '。．.，、：:；;！!？?‥…〜～~ー‐–―・々」』）)]｝〉》〕'
+    '‼⁉''’”'
+    'っヵヶァィゥェォャュョッー'
+)
+KINSOKU_LINE_END_FORBIDDEN = frozenset(
+    '「『（［｛〈《〔“‘([{'
+)
+
+
+def apply_kinsoku_line_breaking(lines: List[str], font_size: int, max_width: int) -> List[str]:
+    """Move boundary-trapped characters onto the line they may legally sit on.
+
+    The wrapping engine breaks CJK freely per character, so it happily ends a
+    line mid-punctuation and starts the next one with e.g. "。". Pull such a
+    character up onto the previous line (or push a trailing opener down),
+    allowing the receiving line to overflow max_width by at most one character
+    (hanging punctuation) — otherwise monospaced CJK could never re-seat
+    anything, since every line is already packed to capacity.
+    """
+    lines = list(lines)
+    overflow_budget = font_size
+    for i in range(len(lines) - 1):
+        cur, nxt = lines[i], lines[i + 1]
+        while nxt and nxt[0] in KINSOKU_LINE_START_FORBIDDEN:
+            candidate = cur + nxt[0]
+            if get_string_width(font_size, candidate) > max_width + overflow_budget:
+                break
+            cur, nxt = candidate, nxt[1:]
+        while cur and cur[-1] in KINSOKU_LINE_END_FORBIDDEN:
+            candidate = cur[-1] + nxt
+            if get_string_width(font_size, candidate) > max_width + overflow_budget:
+                break
+            cur, nxt = cur[:-1], candidate
+        lines[i], lines[i + 1] = cur, nxt
+    # A character vacating its whole line leaves that line empty.
+    return [line for line in lines if line]
+
+
+def calc_horizontal(font_size: int, text: str, max_width: int, max_height: int, language: str = 'en_US', hyphenate: bool = True, kinsoku: bool = False) -> Tuple[List[str], List[int]]:
     """
     Splits up a string of text into lines. Returns list of lines and their widths.
     Will go over max_height if too much text is present.
+    With kinsoku=True, line breaks additionally obey Japanese line-start/line-end
+    forbidden-character rules (禁則処理), trading up to one character of width
+    overflow for legal break positions.
     """
     max_width = max(max_width, 2 * font_size)
 
@@ -883,6 +928,10 @@ def calc_horizontal(font_size: int, text: str, max_width: int, max_height: int, 
         line_width_list[i] = get_string_width(font_size, line_text)
         line_text_list.append(line_text)
 
+    if kinsoku:
+        line_text_list = apply_kinsoku_line_breaking(line_text_list, font_size, max_width)
+        line_width_list = [get_string_width(font_size, line) for line in line_text_list]
+
     return line_text_list, line_width_list
 
 
@@ -1108,7 +1157,7 @@ def put_char_horizontal(font_size: int, cdpt: str, pen_l: Tuple[int, int], canva
 def put_text_horizontal(font_size: int, text: str, width: int, height: int, alignment: str,
                         reversed_direction: bool, fg: Tuple[int, int, int], bg: Tuple[int, int, int],
                         lang: str = 'en_US', hyphenate: bool = True, line_spacing: int = 0,
-                        stroke_width: Optional[float] = None):
+                        stroke_width: Optional[float] = None, kinsoku: bool = False):
     text = compact_special_symbols(text)
     if not text :
         return
@@ -1123,7 +1172,7 @@ def put_text_horizontal(font_size: int, text: str, width: int, height: int, alig
 
     # calc
     # print(width)
-    line_text_list, line_width_list = calc_horizontal(font_size, text, width, height, lang, hyphenate)
+    line_text_list, line_width_list = calc_horizontal(font_size, text, width, height, lang, hyphenate, kinsoku=kinsoku)
     # print(line_text_list, line_width_list)
 
     # make large canvas
