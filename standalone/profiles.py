@@ -5,11 +5,11 @@ need to know stage names. Values explicitly set in the request config always win
 over the profile.
 """
 
+import copy
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 from PIL import Image
-
 # The upstream Config defaults are already tuned for manga, so that profile is empty.
 PROFILES: Dict[str, Dict[str, Any]] = {
     "manga": {},
@@ -107,3 +107,13 @@ def _merge(defaults: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any
         else:
             merged[key] = value
     return merged
+
+
+# generic + mocr: same tuning as generic, but the OCR stage swaps to mocr, the
+# one model in the set that reads simplified/traditional Chinese, Korean and
+# Cyrillic decently. Costs an extra model download on first use and is markedly
+# slower than 48px on CPU, so it stays opt-in by name: the "auto" cascade never
+# picks it on its own.
+PROFILES["generic_cjk"] = _merge(copy.deepcopy(PROFILES["generic"]), {
+    "ocr": {"ocr": "mocr"},
+})

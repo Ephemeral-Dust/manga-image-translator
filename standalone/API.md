@@ -95,7 +95,7 @@ immediately with `ready: false` until the pipeline is loaded.
   bytes is not valid — use a data URI or form upload).
 - `config`: any subset of the pipeline config (section 7). Validated against
   the upstream schema; bad keys/values → 422.
-- `profile`: preset name, `null`, `"manga"`, `"generic"`, or `"auto"`.
+- `profile`: preset name, `null`, `"manga"`, `"generic"`, `"generic_cjk"`, or `"auto"`.
   Omitted or `null` ≡ `"manga"`. Unknown name → 422 listing known names.
 
 ### BatchTranslateRequest
@@ -153,6 +153,7 @@ upstream defaults** — any key you set in `config` always wins.
 |---|---|
 | `"manga"` (default) | Upstream defaults, manga-tuned (B&W panels, RTL panel flow, higher detection thresholds). |
 | `"generic"` | For screenshots/UI/real-world text: same models, but detector thresholds `text_threshold 0.4, box_threshold 0.5, unclip_ratio 1.5` (catches small/missed text), two-pass detection union (`box_threshold_union 0.35`: a second, looser pass only **adds** boxes the strict pass missed — low-contrast text gets found without the strict pass being disturbed; ~2x detection cost), gamma-corrected detection input (`det_gamma_correct true`, helps washed-out photos), line-split tolerance `merge_split_gamma 0.2` (neighbouring text lines become separate regions instead of one merged block), lighter inpaint mask (`mask_dilation_offset 4`), left-to-right rendering (`render.rtl false`), contrast-aware outlines (`render.contrast_aware_stroke true`, see section 7 knobs), and shrink-to-fit font sizing (`render.shrink_to_fit true`: overflowing text shrinks its font into the original box instead of stretching it). |
+| `"generic_cjk"` | Everything `generic` does, plus the OCR stage swapped to `mocr` — the only bundled OCR model that reads simplified/traditional Chinese, Korean and Cyrillic reliably. First use downloads an extra model and it's much slower than the default 48px OCR (diffusion-based, especially on CPU). The `"auto"` cascade never picks it; ask for it explicitly when you know the script. On `/render/*` it behaves exactly like `generic` (no OCR there). |
 | `"auto"` | Not a preset — a per-image cascade: a millisecond colorfulness check (Hasler-Süsstrunk on a 64px thumbnail, threshold 25.0) orders two full attempts: grayscale → `manga` then `generic`; colorful → `generic` then `manga`. The **first preset that detects ≥1 text region serves**; the other never runs. If neither detects anything, the last-attempted preset serves (unchanged image). Cost: a wrong first guess doubles latency for that image. Known weakness: color manga (webtoons) start on `generic` and keep its result even when `manga` would typeset better — fallback triggers only on zero detections. |
 
 - Explicit profiles never cascade — exactly one attempt, no fallback.
@@ -251,7 +252,7 @@ profile's values.
 | 401 | server has an API key set and `X-API-Key` is missing/wrong | `{"detail":"Invalid or missing X-API-Key"}` |
 | 422 | `config` not valid JSON / not an object | `{"detail":"Invalid config: ..."}` |
 | 422 | `config` fails the schema | FastAPI validation array (`detail[].loc` names the offending path) |
-| 422 | unknown profile | `{"detail":"Unknown profile 'x'. Known profiles: generic, manga, auto"}` |
+| 422 | unknown profile | `{"detail":"Unknown profile 'x'. Known profiles: generic, generic_cjk, manga, auto"}` |
 | 422 | image undecodable / bad data URI | pydantic validation array on `image` |
 | 422 | render request: degenerate box, region outside the image, or no resolvable translation (section 14) | `{"detail":"..."}` plain string |
 | 422 | render `regions` not a JSON array / bad region objects | `{"detail":"..."}` (form) or FastAPI validation array (JSON body) |

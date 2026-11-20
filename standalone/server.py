@@ -197,7 +197,7 @@ class TranslateRequest(BaseModel):
     config: dict = Field(default_factory=dict)
     """Partial pipeline config; unset fields come from the profile, then upstream defaults"""
     profile: Optional[str] = None
-    """Config defaults preset: "manga" (default), "generic", or "auto" (cascade; see profiles.py)"""
+    """Config defaults preset: "manga" (default), "generic", "generic_cjk", or "auto" (cascade; see profiles.py)"""
 
 
 class BatchTranslateRequest(BaseModel):
@@ -214,7 +214,7 @@ class RenderRequest(BaseModel):
     config: dict = Field(default_factory=dict)
     """Partial pipeline config; unset fields come from the profile, then upstream defaults"""
     profile: Optional[str] = None
-    """Config defaults preset: "manga" (default), "generic", or "auto" (picks by color cue, no cascade)"""
+    """Config defaults preset: "manga" (default), "generic", "generic_cjk" (acts as "generic" here — no OCR on render endpoints), or "auto" (picks by color cue, no cascade)"""
 
 
 def get_engine(request: Request) -> Engine:

@@ -306,6 +306,35 @@ def test_json_endpoint_reports_profile(client):
     assert resp.headers["x-mimg-profile"] == "generic"
 
 
+def test_generic_cjk_profile_inherits_generic_and_swaps_ocr():
+    from standalone import profiles
+
+    merged = profiles.apply_profile({}, "generic_cjk")
+    assert merged["ocr"]["ocr"] == "mocr"
+    # Everything generic tunes comes along.
+    assert merged["detector"]["box_threshold"] == 0.5
+    assert merged["detector"]["box_threshold_union"] == 0.35
+    assert merged["render"]["shrink_to_fit"] is True
+    # Deriving must not mutate the generic profile itself.
+    assert "ocr" not in profiles.PROFILES["generic"]
+    # Request config still wins over the profile.
+    merged = profiles.apply_profile({"ocr": {"ocr": "48px"}}, "generic_cjk")
+    assert merged["ocr"]["ocr"] == "48px"
+    # Not part of the auto cascade.
+    assert "generic_cjk" not in profiles.AUTO_ORDER_COLOR + profiles.AUTO_ORDER_GRAYSCALE
+
+
+def test_generic_cjk_served_as_explicit_profile(client):
+    # detector=none means OCR never runs, so no mocr weights are needed here.
+    resp = client.post("/translate/image", json={
+        "image": data_uri(make_png()),
+        "config": PASSTHROUGH_CONFIG,
+        "profile": "generic_cjk",
+    })
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-mimg-profile"] == "generic_cjk"
+
+
 def test_batch_reports_per_image_profiles(client):
     resp = client.post("/translate/batch/image", json={
         "images": [data_uri(make_color_png()), data_uri(make_png())],
