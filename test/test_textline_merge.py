@@ -365,3 +365,54 @@ async def test_merge_image10():
     # print((await generate_combinations(lines, width, height))[0])
     expected_combinations = [[0, 9], [1, 6, 8, 11], [2], [3, 4], [5, 7, 10], [12, 13]]
     await run_test(lines, expected_combinations, width, height, '10.png')
+
+
+# --- Configurable merge/split tolerances (fork addition) ---
+
+def line_box(x1, y1, x2, y2, text, prob=1.0):
+    pts = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.float32)
+    return Quadrilateral(pts, text, prob)
+
+
+def stacked_lines(gap):
+    """Two centred horizontal textlines (font size 40) with a vertical edge gap of `gap` px."""
+    return [
+        line_box(100, 100, 300, 140, "LINE ONE"),
+        line_box(100, 140 + gap, 300, 180 + gap, "LINE TWO"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_default_gamma_merges_stacked_lines():
+    # Built-in gamma keeps two lines merged while their pitch (here 55 px = 1.375
+    # char heights) is below 1.5x font size — the behaviour manga relies on.
+    regions = await dispatch_merge(stacked_lines(15), 600, 600)
+    assert len(regions) == 1
+
+
+@pytest.mark.asyncio
+async def test_lower_gamma_splits_stacked_lines():
+    # The generic profile's gamma splits the same geometry at 1.2x font size.
+    regions = await dispatch_merge(stacked_lines(15), 600, 600, split_gamma=0.2)
+    assert len(regions) == 2
+    assert sorted(r.text for r in regions) == ["LINE ONE", "LINE TWO"]
+
+
+@pytest.mark.asyncio
+async def test_lower_gamma_keeps_tight_wrapped_lines_merged():
+    # Wrapped lines with tight leading (pitch 45 px = 1.125 char heights) stay
+    # one region even at gamma 0.2, so paragraph context survives.
+    regions = await dispatch_merge(stacked_lines(5), 600, 600, split_gamma=0.2)
+    assert len(regions) == 1
+
+
+@pytest.mark.asyncio
+async def test_char_gap_tolerance_plumbing():
+    # Gap 45 px exceeds the built-in 1-char merge gap, so the lines never become
+    # one region regardless of gamma...
+    regions = await dispatch_merge(stacked_lines(45), 600, 600)
+    assert len(regions) == 2
+    # ...unless the gap tolerance is raised (and gamma permits the wide pitch).
+    regions = await dispatch_merge(stacked_lines(45), 600, 600,
+                                   char_gap_tolerance=2.0, split_gamma=1.5)
+    assert len(regions) == 1

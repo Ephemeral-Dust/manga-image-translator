@@ -79,7 +79,7 @@ def split_text_region(
             G.add_edge(edge[0], edge[1])
         ans = []
         for node_set in nx.algorithms.components.connected_components(G):
-            ans.extend(split_text_region(bboxes, node_set, width, height))
+            ans.extend(split_text_region(bboxes, node_set, width, height, gamma=gamma, sigma=sigma))
         return ans
 
 # def get_mini_boxes(contour):
@@ -107,7 +107,11 @@ def split_text_region(
 #     box = np.array(box)
 #     return box
 
-def merge_bboxes_text_region(bboxes: List[Quadrilateral], width, height):
+def merge_bboxes_text_region(bboxes: List[Quadrilateral], width, height,
+                             char_gap_tolerance: float = 1.0,
+                             char_gap_tolerance2: float = 3.0,
+                             split_gamma: float = 0.5,
+                             split_sigma: float = 2.0):
     # step 0: merge quadrilaterals that belong to the same textline
     # u = 0
     # removed_counter = 0
@@ -132,13 +136,14 @@ def merge_bboxes_text_region(bboxes: List[Quadrilateral], width, height):
     for ((u, ubox), (v, vbox)) in itertools.combinations(enumerate(bboxes), 2):
         # if quadrilateral_can_merge_region_coarse(ubox, vbox):
         if quadrilateral_can_merge_region(ubox, vbox, aspect_ratio_tol=1.3, font_size_ratio_tol=2,
-                                          char_gap_tolerance=1, char_gap_tolerance2=3):
+                                          char_gap_tolerance=char_gap_tolerance, char_gap_tolerance2=char_gap_tolerance2):
             G.add_edge(u, v)
 
     # step 2: postprocess - further split each region
     region_indices: List[Set[int]] = []
     for node_set in nx.algorithms.components.connected_components(G):
-         region_indices.extend(split_text_region(bboxes, node_set, width, height))
+         region_indices.extend(split_text_region(bboxes, node_set, width, height,
+                                                 gamma=split_gamma, sigma=split_sigma))
 
     # step 3: return regions
     for node_set in region_indices:
@@ -181,7 +186,9 @@ def merge_bboxes_text_region(bboxes: List[Quadrilateral], width, height):
         # yield overall bbox and sorted indices
         yield txtlns, (fg_r, fg_g, fg_b), (bg_r, bg_g, bg_b)
 
-async def dispatch(textlines: List[Quadrilateral], width: int, height: int, verbose: bool = False) -> List[TextBlock]:
+async def dispatch(textlines: List[Quadrilateral], width: int, height: int, verbose: bool = False,
+                   char_gap_tolerance: float = 1.0, char_gap_tolerance2: float = 3.0,
+                   split_gamma: float = 0.5, split_sigma: float = 2.0) -> List[TextBlock]:
     # print(width, height)
     # import re
     # for l in textlines:
@@ -190,7 +197,11 @@ async def dispatch(textlines: List[Quadrilateral], width: int, height: int, verb
     #     print(s)
 
     text_regions: List[TextBlock] = []
-    for (txtlns, fg_color, bg_color) in merge_bboxes_text_region(textlines, width, height):
+    for (txtlns, fg_color, bg_color) in merge_bboxes_text_region(textlines, width, height,
+                                                                 char_gap_tolerance=char_gap_tolerance,
+                                                                 char_gap_tolerance2=char_gap_tolerance2,
+                                                                 split_gamma=split_gamma,
+                                                                 split_sigma=split_sigma):
         total_logprobs = 0
         for txtln in txtlns:
             total_logprobs += np.log(txtln.prob) * txtln.area

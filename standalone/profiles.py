@@ -24,6 +24,17 @@ PROFILES: Dict[str, Dict[str, Any]] = {
             "text_threshold": 0.4,
             "box_threshold": 0.5,
             "unclip_ratio": 1.5,
+            # Washed-out photos defeat the DBNet-style detector; gamma
+            # correction normalises contrast before detection (existing flag,
+            # effect on real signage not yet A/B-verified)
+            "det_gamma_correct": True,
+            # Split neighbouring sign lines into separate regions instead of one
+            # merged block. Default keeps lines merged while their pitch (corner
+            # distance) is below 1.5x font size — almost any two lines of a sign
+            # qualify; 0.2 splits at 1.2x while wrapped lines with tight leading
+            # (< ~1.15x pitch) stay one region. Tunable per request via
+            # detector.merge_split_gamma / merge_char_gap_tolerance(2).
+            "merge_split_gamma": 0.2,
         },
         "mask_dilation_offset": 4,
         "render": {"rtl": False},

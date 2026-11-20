@@ -290,6 +290,12 @@ class DetectorConfig(BaseModel):
     """Threshold for bbox generation"""
     unclip_ratio: float = 2.3
     """How much to extend text skeleton to form bounding box"""
+    merge_char_gap_tolerance: Optional[float] = None
+    """Max gap between two textlines (in character heights) that still allows merging them into one text region. Lower values keep more lines separate. If None, uses the built-in default."""
+    merge_char_gap_tolerance2: Optional[float] = None
+    """Position tolerance (in character heights) for merging aligned textlines into one region. Lower values split neighbouring lines into separate regions instead of one merged block. If None, uses the built-in default."""
+    merge_split_gamma: Optional[float] = None
+    """Line pitch threshold factor for keeping two textlines in one region: they stay merged when their pitch is below (1 + this) * font size. Lower values split neighbouring lines into separate regions; wrapped lines with tight leading stay together. If None, uses the built-in default."""
 
 class InpainterConfig(BaseModel):
     inpainter: Inpainter = Inpainter.lama_large
