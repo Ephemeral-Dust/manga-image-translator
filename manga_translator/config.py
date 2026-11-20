@@ -296,6 +296,8 @@ class DetectorConfig(BaseModel):
     """Threshold for bbox generation"""
     unclip_ratio: float = 2.3
     """How much to extend text skeleton to form bounding box"""
+    box_threshold_union: Optional[float] = None
+    """Second, looser box threshold for a union detection pass (default detector only). When set, detection runs twice — once at box_threshold, once at this value — and boxes only the loose pass finds are added. Costs about double the detection time."""
     merge_char_gap_tolerance: Optional[float] = None
     """Max gap between two textlines (in character heights) that still allows merging them into one text region. Lower values keep more lines separate. If None, uses the built-in default."""
     merge_char_gap_tolerance2: Optional[float] = None

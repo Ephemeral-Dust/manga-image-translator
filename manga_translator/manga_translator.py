@@ -92,6 +92,35 @@ def apply_dictionary(text, dictionary):
             logger.info(f'Line {line_number}: Replaced "{original_text}" with "{text}" using pattern "{pattern.pattern}" and value "{value}"')
     return text
 
+def _quad_iou(a, b) -> float:
+    from shapely.geometry import Polygon
+    pa = Polygon(np.asarray(a.pts, dtype=np.float64).reshape(-1, 2))
+    pb = Polygon(np.asarray(b.pts, dtype=np.float64).reshape(-1, 2))
+    if not pa.is_valid or not pb.is_valid:
+        return 0.0
+    inter = pa.intersection(pb).area
+    union = pa.area + pb.area - inter
+    return inter / union if union > 0 else 0.0
+
+
+def merge_detection_results(primary, secondary, iou_threshold: float = 0.3):
+    """Union of two detection passes on the same image.
+
+    Keeps every primary box and adds secondary (looser-threshold) boxes that
+    do not overlap anything already kept, so a second pass can only ever find
+    additional text. Probability masks are max-combined.
+    """
+    textlines, mask_raw, mask = primary
+    sec_lines, sec_mask, _ = secondary
+    kept = list(textlines)
+    for q in sorted(sec_lines or [], key=lambda q: q.prob or 0, reverse=True):
+        if all(_quad_iou(q, k) < iou_threshold for k in kept):
+            kept.append(q)
+    if mask_raw is not None and sec_mask is not None and sec_mask.shape == mask_raw.shape:
+        mask_raw = np.maximum(mask_raw, sec_mask)
+    return kept, mask_raw, mask
+
+
 class MangaTranslator:
     verbose: bool
     ignore_errors: bool
@@ -689,7 +718,18 @@ class MangaTranslator:
                                         config.detector.box_threshold,
                                         config.detector.unclip_ratio, config.detector.det_invert, config.detector.det_gamma_correct, config.detector.det_rotate,
                                         config.detector.det_auto_rotate,
-                                        self.device, self.verbose)        
+                                        self.device, self.verbose)
+        # Two-threshold union: a second, looser pass only adds boxes the strict
+        # pass missed (see merge_detection_results), so low-contrast text gets a
+        # second chance without the strict pass's findings being disturbed.
+        union_threshold = config.detector.box_threshold_union
+        if union_threshold is not None and union_threshold < config.detector.box_threshold and config.detector.detector == 'default':
+            secondary = await dispatch_detection(config.detector.detector, ctx.img_rgb, config.detector.detection_size, config.detector.text_threshold,
+                                                 union_threshold,
+                                                 config.detector.unclip_ratio, config.detector.det_invert, config.detector.det_gamma_correct, config.detector.det_rotate,
+                                                 config.detector.det_auto_rotate,
+                                                 self.device, self.verbose)
+            result = merge_detection_results(result, secondary)
         return result
 
     async def _unload_model(self, tool: str, model: str):

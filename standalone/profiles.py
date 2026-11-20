@@ -24,6 +24,11 @@ PROFILES: Dict[str, Dict[str, Any]] = {
             "text_threshold": 0.4,
             "box_threshold": 0.5,
             "unclip_ratio": 1.5,
+            # Low-contrast signs sit right between the strict 0.5 and a looser
+            # net: a second pass at 0.35 only adds boxes the strict pass missed
+            # (IoU-deduped union), instead of trading strictness for recall.
+            # Costs roughly double the detection time.
+            "box_threshold_union": 0.35,
             # Washed-out photos defeat the DBNet-style detector; gamma
             # correction normalises contrast before detection (existing flag,
             # effect on real signage not yet A/B-verified)
