@@ -366,6 +366,8 @@ straight back:
 | `text` | optional | Language-keyed source-text map, same shape as section 6. A non-target-language entry is used for mask fitting (deciding which pixels get painted out). |
 | `angle` | optional (0) | Text angle in degrees — carry over from `/translate/json` unchanged. |
 | `prob` | optional (1.0) | OCR confidence; unused when rendering. |
+| `alignment` | optional | `left` / `center` / `right` / `auto`. Multi-line text alignment inside the box. Omit or `auto` for the default (single lines centered, multi-line follows writing direction). |
+| `direction` | optional | `h` / `v` / `hr` / `vr` / `auto`. Writing direction override: horizontal, vertical, right-to-left horizontal, right-to-left vertical. Omit or `auto` to infer from the target language and box shape. |
 | `text_color` | optional | `{"fg":[r,g,b],"bg":[r,g,b]}`. Omit and the server estimates both from the region's pixels. `bg` is the outline color; when `render.contrast_aware_stroke` is on (`generic` profile default) the server re-checks it against the inpainted backdrop and repaints the outline black/white if it would vanish into it. |
 | `is_bulleted_list` | optional | Accepted and ignored — recomputed from the text. |
 | `background` | optional | Accepted and ignored — inpainting always regenerates it from the input image. |
@@ -378,7 +380,7 @@ render settings (font, size fit, RTL order, hyphenation...). Detection, OCR
 and translation never run on these endpoints, so `detector`, `ocr` and
 `translator.translator` config keys have no effect here;
 `translator.target_lang` still decides the translation fallback lookup and the
-render script direction.
+render script direction, unless a region overrides it with `direction`.
 
 ### Round-trip example (server detects, your model translates, server renders)
 

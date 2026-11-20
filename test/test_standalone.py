@@ -440,6 +440,45 @@ def test_render_tall_narrow_box_with_long_text(client):
     assert len(xs) <= (131 - 70 + 1) * (146 - 49 + 1)
 
 
+def test_render_region_alignment_and_direction(client):
+    """Per-region alignment/direction opt-ins are accepted and reach the block."""
+    from standalone.render import RenderRegion, build_blocks
+    from manga_translator.config import Config
+
+    img_rgb = np.zeros((48, 64, 3), dtype=np.uint8)
+    config = Config()
+
+    plain, _ = build_blocks([RenderRegion(
+        minX=2, minY=2, maxX=60, maxY=26, translation="Hello",
+    )], config, img_rgb)
+    assert plain[0]._alignment == "auto"
+    assert plain[0]._direction == "auto"
+
+    styled, _ = build_blocks([RenderRegion(
+        minX=2, minY=2, maxX=60, maxY=26, translation="Hello",
+        alignment="left", direction="hr",
+    )], config, img_rgb)
+    assert styled[0].alignment == "left"
+    assert styled[0].direction == "hr"
+
+    resp = client.post("/render/image", json={
+        "image": data_uri(make_png(64, 48)),
+        "regions": [render_region(translation="Hello", alignment="center", direction="v")],
+        "config": RENDER_CONFIG,
+    })
+    assert resp.status_code == 200, resp.text
+
+
+def test_render_region_bad_alignment_or_direction_422(client):
+    for bad in ({"alignment": "middle"}, {"direction": "horizontal"}, {"direction": "rtl"}):
+        resp = client.post("/render/image", json={
+            "image": data_uri(make_png(64, 48)),
+            "regions": [render_region(translation="Hello", **bad)],
+            "config": RENDER_CONFIG,
+        })
+        assert resp.status_code == 422, f"{bad}: {resp.status_code} {resp.text}"
+
+
 def test_render_empty_regions_returns_input_unchanged(client):
     img = make_png(10, 6, color=(1, 2, 3))
     resp = client.post("/render/image", json={"image": data_uri(img), "regions": []})

@@ -12,7 +12,7 @@ Region field names intentionally mirror the Translation objects from
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -40,6 +40,10 @@ class RenderRegion(BaseModel):
     """Text to render. Falls back to text[config.translator.target_lang]."""
     text_color: Optional[TextColor] = None
     """Omit to let the server estimate fg/bg from the region pixels."""
+    alignment: Optional[Literal["auto", "left", "center", "right"]] = None
+    """Multi-line text alignment inside the box. Omitted or "auto" uses the pipeline default (center for single lines)."""
+    direction: Optional[Literal["auto", "h", "v", "hr", "vr"]] = None
+    """Writing direction override: h horizontal, v vertical, hr/vr right-to-left variants. Omitted or "auto" infers it from the target language and box shape."""
     is_bulleted_list: bool = False
     """Accepted for round-tripping; the pipeline recomputes it from the text."""
     background: Optional[str] = None
@@ -144,6 +148,11 @@ def build_blocks(
                 fg_color=fg,
                 bg_color=bg,
                 target_lang=target_lang,
+                # "auto" keeps the pipeline defaults (direction from language /
+                # box aspect, alignment center for single lines); explicit
+                # values from the client pass straight through to TextBlock.
+                direction=region.direction or "auto",
+                alignment=region.alignment or "auto",
             )
         )
         cv2.rectangle(mask_raw, (x1, y1), (x2, y2), 255, -1)
