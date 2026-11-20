@@ -137,3 +137,48 @@ def test_render_single_caps_the_warp_canvas(monkeypatch):
     out = render_single(img.copy(), region, tall_narrow, True, None, False)
     assert not np.array_equal(out, img)  # text still painted
     assert int(np.count_nonzero(out)) > 0
+
+
+def test_render_single_preshrinks_canvas_before_downscale(monkeypatch):
+    """A strip padded past the destination box's size used to be warped down in
+    one INTER_LINEAR step, aliasing thin strokes. It must be area-resized close
+    to the destination size first so the warp itself only upscales."""
+    resizes = []
+    real_resize = cv2.resize
+
+    def spy(img, dsize, *args, **kwargs):
+        resizes.append((img.shape[:2], dsize, kwargs.get('interpolation')))
+        return real_resize(img, dsize, *args, **kwargs)
+
+    monkeypatch.setattr(cv2, 'resize', spy)
+    img = np.zeros((300, 400, 3), dtype=np.uint8)
+    # 100x30 box; the wrapped 60px strip padded to this ratio is far larger.
+    small_box = np.array([[[10, 10], [110, 10], [110, 40], [10, 40]]], dtype=np.int64)
+    region = make_flat_test_region(translation='word ' * 40, font_size=60)
+    out = render_single(img.copy(), region, small_box, True, None, False)
+    assert int(np.count_nonzero(out)) > 0  # text still painted
+
+    area_resizes = [(src, dst) for src, dst, interp in resizes if interp == cv2.INTER_AREA]
+    assert area_resizes, 'expected an INTER_AREA pre-shrink of the text canvas'
+    src_shape, (new_w, new_h) = area_resizes[-1]
+    dst_area = 100 * 30
+    assert new_w * new_h < src_shape[0] * src_shape[1]  # actually shrank
+    assert dst_area * 0.5 <= new_w * new_h <= dst_area * 1.5  # landed near box size
+
+
+def test_render_single_maps_quads_with_exact_perspective_transform(monkeypatch):
+    """Four point correspondences need the closed-form 4-point transform;
+    findHomography's RANSAC adds random sampling without earning anything."""
+    calls = []
+    real_get_perspective = cv2.getPerspectiveTransform
+
+    def spy(src, dst):
+        calls.append((src.shape, dst.shape, dst.dtype))
+        return real_get_perspective(src, dst)
+
+    monkeypatch.setattr(cv2, 'getPerspectiveTransform', spy)
+    img = np.zeros((300, 400, 3), dtype=np.uint8)
+    box = np.array([[[10, 10], [210, 10], [210, 70], [10, 70]]], dtype=np.int64)
+    out = render_single(img.copy(), make_flat_test_region(), box, True, None, False)
+    assert int(np.count_nonzero(out)) > 0
+    assert calls == [((4, 2), (4, 2), np.dtype('float32'))]

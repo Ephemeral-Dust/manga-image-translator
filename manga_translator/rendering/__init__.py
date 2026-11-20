@@ -454,7 +454,27 @@ def render(
     #src_pts[:, 0] = np.clip(np.round(src_pts[:, 0]), 0, enlarged_w * 2)
     #src_pts[:, 1] = np.clip(np.round(src_pts[:, 1]), 0, enlarged_h * 2)
 
-    M, _ = cv2.findHomography(src_points, dst_points, cv2.RANSAC, 5.0)
+    # warpPerspective's INTER_LINEAR neither pre-filters shrinks nor keeps thin
+    # strokes: a strip padded taller/wider than the destination box is warped
+    # straight down, which aliases the glyphs. Pre-shrink with INTER_AREA (area
+    # averaging) so the final warp only ever upscales.
+    dst_quad = np.asarray(dst_points, dtype=np.float32).reshape(-1, 2)
+    canvas_area = float(box.shape[0] * box.shape[1])
+    dst_area = cv2.contourArea(dst_quad)
+    if 0 < dst_area < canvas_area:
+        scale = (dst_area / canvas_area) ** 0.5
+        new_w = max(1, int(round(box.shape[1] * scale)))
+        new_h = max(1, int(round(box.shape[0] * scale)))
+        box = cv2.resize(box, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        src_points = np.array([[0, 0], [new_w, 0], [new_w, new_h], [0, new_h]], dtype=np.float32)
+        logger.debug(f'Shrinking the text canvas for "{region.translation}" to {new_w}x{new_h} before warping it down to its box')
+
+    if len(dst_quad) == 4 and dst_area > 0:
+        # Exactly four correspondences: findHomography's RANSAC only earns its
+        # keep with more than four and merely adds random sampling here.
+        M = cv2.getPerspectiveTransform(src_points, dst_quad)
+    else:
+        M, _ = cv2.findHomography(src_points, dst_points, cv2.RANSAC, 5.0)
     if M is None or not np.isfinite(M).all():
         logger.warning(f'Skipping "{region.translation}": no homography maps its text box onto the image')
         return img
