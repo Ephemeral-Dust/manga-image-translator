@@ -88,6 +88,30 @@ def auto_order(image: Image.Image) -> Tuple[str, str]:
     return AUTO_ORDER_GRAYSCALE
 
 
+# Messenger-resized photos shrink glyphs below what the OCR crops can read, so
+# the generic family pre-upscales small inputs (esrgan, before detection/OCR).
+# Manga sources are usually big enough and the upscale is real compute, so this
+# stays confined to the generic profiles and never overrides an explicit
+# upscale_ratio from the request.
+AUTO_UPSCALE_PROFILES = ("generic", "generic_cjk")
+AUTO_UPSCALE_SHORT_SIDE_2X = 1024
+AUTO_UPSCALE_SHORT_SIDE_3X = 512
+AUTO_UPSCALE_MAX_LONG_SIDE = 8192
+
+
+def auto_upscale_ratio(image: Image.Image) -> Optional[int]:
+    """Pre-upscale factor for this input, or None when it is big enough."""
+    w, h = image.size
+    short, long_ = min(w, h), max(w, h)
+    if short >= AUTO_UPSCALE_SHORT_SIDE_2X:
+        return None
+    ratio = 3 if short < AUTO_UPSCALE_SHORT_SIDE_3X else 2
+    # Keep the upscaled image a manageable size for the upscaler tiles.
+    while ratio > 1 and long_ * ratio > AUTO_UPSCALE_MAX_LONG_SIDE:
+        ratio -= 1
+    return ratio if ratio > 1 else None
+
+
 def apply_profile(config: Dict[str, Any], profile: Optional[str]) -> Dict[str, Any]:
     """Merge the request config on top of the named profile's defaults.
 

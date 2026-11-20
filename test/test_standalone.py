@@ -335,6 +335,61 @@ def test_generic_cjk_served_as_explicit_profile(client):
     assert resp.headers["x-mimg-profile"] == "generic_cjk"
 
 
+def test_auto_upscale_ratio_thresholds_and_cap():
+    from standalone.profiles import auto_upscale_ratio
+
+    assert auto_upscale_ratio(Image.new("RGB", (1500, 1200))) is None
+    assert auto_upscale_ratio(Image.new("RGB", (1500, 1024))) is None  # boundary
+    assert auto_upscale_ratio(Image.new("RGB", (1500, 1023))) == 2
+    assert auto_upscale_ratio(Image.new("RGB", (1500, 512))) == 2
+    assert auto_upscale_ratio(Image.new("RGB", (1500, 511))) == 3
+    # Long-side cap demotes 3x -> 2x -> (nothing worth doing) -> None.
+    assert auto_upscale_ratio(Image.new("RGB", (300, 3000))) == 2
+    assert auto_upscale_ratio(Image.new("RGB", (300, 5000))) is None
+
+
+def test_build_config_auto_upscale_generic_family_only():
+    from standalone.server import build_config
+
+    small = Image.new("RGB", (640, 480))   # short 480 -> 3x
+    big = Image.new("RGB", (2000, 1500))
+
+    assert build_config({}, "generic", small).upscale.upscale_ratio == 3
+    assert build_config({}, "generic_cjk", small).upscale.upscale_ratio == 3
+    assert build_config({}, "generic", big).upscale.upscale_ratio is None
+    assert build_config({}, "manga", small).upscale.upscale_ratio is None
+    assert build_config({}, None, small).upscale.upscale_ratio is None
+
+    # An explicit ratio from the request always wins, including 1 = "off",
+    # and the rest of the request's upscale section survives.
+    cfg = build_config({"upscale": {"upscale_ratio": 4, "revert_upscaling": True}}, "generic", small)
+    assert cfg.upscale.upscale_ratio == 4
+    assert cfg.upscale.revert_upscaling is True
+    assert build_config({"upscale": {"upscale_ratio": 1}}, "generic", small).upscale.upscale_ratio == 1
+
+    # Detection disabled -> the stages upscaling would feed never run.
+    cfg = build_config(dict(PASSTHROUGH_CONFIG), "generic", small)
+    assert cfg.upscale.upscale_ratio is None
+
+    # Injection must not mutate the caller's raw dict.
+    raw = {"upscale": {"revert_upscaling": True}}
+    build_config(raw, "generic", small)
+    assert raw == {"upscale": {"revert_upscaling": True}}
+
+
+def test_generic_small_input_with_detection_disabled_skips_upscale(client):
+    # detector=none: no weights, and the output must stay at input size,
+    # proving the auto-upscale injection stood down.
+    resp = client.post("/translate/image", json={
+        "image": data_uri(make_png(64, 48)),
+        "config": PASSTHROUGH_CONFIG,
+        "profile": "generic",
+    })
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["x-mimg-profile"] == "generic"
+    assert decode_png(resp.content).size == (64, 48)
+
+
 def test_batch_reports_per_image_profiles(client):
     resp = client.post("/translate/batch/image", json={
         "images": [data_uri(make_color_png()), data_uri(make_png())],

@@ -39,7 +39,7 @@ from manga_translator import Config, MangaTranslator
 
 from .images import to_pil_image
 from . import profiles
-from .profiles import AUTO_PROFILE, PROFILES, apply_profile
+from .profiles import AUTO_PROFILE, PROFILES, apply_profile, auto_upscale_ratio
 from .render import RenderRegion, render_regions
 from .to_json import TranslationResponse, to_translation
 
@@ -142,11 +142,13 @@ class Engine:
                 self.stage, self.finished = "idle", True
 
 
-def build_config(raw, profile: Optional[str]) -> Config:
+def build_config(raw, profile: Optional[str], image=None) -> Config:
     """Validate a request-supplied config dict against the pipeline Config model.
 
     `raw` may be a dict or a JSON string (multipart form fields). The named
-    profile contributes defaults; anything the request sets wins.
+    profile contributes defaults; anything the request sets wins. When `image`
+    is given and the profile opts into auto-upscaling (generic family) a small
+    input gets an upscale_ratio injected, unless the request set one itself.
     """
     if isinstance(raw, str):
         try:
@@ -162,6 +164,17 @@ def build_config(raw, profile: Optional[str]) -> Config:
     except KeyError:
         known = ", ".join(sorted(PROFILES)) + ", auto"
         raise HTTPException(422, f"Unknown profile {profile!r}. Known profiles: {known}")
+    if image is not None and profile in profiles.AUTO_UPSCALE_PROFILES:
+        # Upscaling only pays for itself when the detection/OCR stages it
+        # feeds will actually run.
+        effective_detector = (merged.get("detector") or {}).get("detector")
+        if effective_detector != "none":
+            ratio = auto_upscale_ratio(image)
+            if ratio is not None:
+                upscale_cfg = dict(merged.get("upscale") or {})
+                if "upscale_ratio" not in upscale_cfg:
+                    upscale_cfg["upscale_ratio"] = ratio
+                    merged["upscale"] = upscale_cfg
     try:
         return Config.model_validate(merged)
     except ValidationError as exc:
@@ -258,7 +271,7 @@ async def _translate_cascade(engine, pil_image, raw_config: dict, profile: Optio
     """
     names = resolve_profiles(profile, pil_image)
     for name in names:
-        config = build_config(raw_config, name)
+        config = build_config(raw_config, name, pil_image)
         ctx = await engine.translate(pil_image, config)
         if ctx.text_regions:
             return ctx, name
