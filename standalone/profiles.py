@@ -44,6 +44,10 @@ PROFILES: Dict[str, Dict[str, Any]] = {
             # texture, so an outline that matched the old pixels can vanish
             # into it. Re-check against the actual canvas before typesetting.
             "contrast_aware_stroke": True,
+            # Sign text that does not fit should shrink its font, not stretch
+            # the box into neighbouring artwork (or be silently downscaled by
+            # the perspective warp together with the padding).
+            "shrink_to_fit": True,
         },
     },
 }

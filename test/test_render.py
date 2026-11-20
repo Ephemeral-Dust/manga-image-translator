@@ -13,6 +13,7 @@ from manga_translator.rendering import (
     render as render_single,
     resize_regions_to_font_size,
     sample_canvas_bg,
+    shrink_font_size_to_fit,
     text_render,
 )
 from manga_translator.utils import (
@@ -248,3 +249,59 @@ def test_render_single_contrast_aware_stroke_repaints_invisible_outline():
     crisp = make_stroke_test_region(fg=(255, 255, 255), bg=(0, 0, 0))
     kept = render_single(img.copy(), crisp, STROKE_TEST_BOX, True, None, False, contrast_aware_stroke=True)
     assert int(np.count_nonzero((kept[..., 0] < 60) & (kept[..., 1] < 60) & (kept[..., 2] < 60))) > 0  # black outline painted
+
+
+def make_fit_test_region(translation, polygon=None, font_size=40):
+    if polygon is None:
+        polygon = [[10, 10], [200, 10], [10, 60], [200, 60]]
+    region = TextBlock([polygon], texts=['source'], translation=translation, font_size=font_size)
+    region.target_lang = 'ENG'
+    return region
+
+
+LONG_TRANSLATION = 'Alpha Beta Gamma Delta Epsilon Zeta Eta Theta Iota Kappa Lambda Mu Nu'
+SHORT_TRANSLATION = 'Hi there'
+
+
+def quad_width(pts):
+    pts = np.asarray(pts).reshape(-1, 2)
+    return pts[:, 0].max() - pts[:, 0].min()
+
+
+def test_shrink_font_size_to_fit_binary_searches_the_largest_fitting_size():
+    region = make_fit_test_region(LONG_TRANSLATION)  # 190x50 box, 40px font
+    fitted = shrink_font_size_to_fit(region, 40, 10)
+    assert fitted is not None
+    assert 10 <= fitted < 40
+    lines, widths = text_render.calc_horizontal(fitted, LONG_TRANSLATION, 190, 50, 'ENG', True)
+    assert len(lines) * fitted <= 50 and max(widths) <= 190
+    # the next size up must overflow, i.e. the search found the optimum
+    lines, widths = text_render.calc_horizontal(fitted + 1, LONG_TRANSLATION, 190, 50, 'ENG', True)
+    assert len(lines) * (fitted + 1) > 50 or max(widths) > 190
+
+
+def test_shrink_font_size_to_fit_passthrough_and_give_up_cases():
+    region = make_fit_test_region(SHORT_TRANSLATION)
+    assert shrink_font_size_to_fit(region, 40, 10) == 40  # already fits
+    region = make_fit_test_region(LONG_TRANSLATION * 4)
+    assert shrink_font_size_to_fit(region, 40, 10) is None  # hopeless even at 10px
+
+
+def test_resize_regions_shrink_to_fit_prefers_font_over_box_growth():
+    img = np.zeros((300, 400, 3), dtype=np.uint8)
+
+    region = make_fit_test_region(LONG_TRANSLATION)
+    shrunk = resize_regions_to_font_size(img, [region], None, 0, 10, shrink_to_fit=True)[0]
+    assert region.font_size < 40
+    assert quad_width(shrunk) == quad_width(region.min_rect)  # box untouched
+
+    region = make_fit_test_region(LONG_TRANSLATION)
+    grown = resize_regions_to_font_size(img, [region], None, 0, 10)[0]
+    assert region.font_size == 40  # default path: font kept, box widened
+    assert quad_width(grown) > quad_width(region.min_rect)
+
+    # Hopeless text still takes the old box-growth path with the flag on.
+    region = make_fit_test_region(LONG_TRANSLATION * 4)
+    grown = resize_regions_to_font_size(img, [region], None, 0, 10, shrink_to_fit=True)[0]
+    assert region.font_size == 40
+    assert quad_width(grown) > quad_width(region.min_rect)

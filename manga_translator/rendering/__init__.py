@@ -99,7 +99,57 @@ def clamp_quad_to_canvas(pts: np.ndarray, canvas_shape) -> np.ndarray:
     return clipped
 
 
-def resize_regions_to_font_size(img: np.ndarray, text_regions: List['TextBlock'], font_size_fixed: int, font_size_offset: int, font_size_minimum: int):  
+def _text_fits_horizontal(font_size: int, text: str, w: float, h: float, lang: str, hyphenate: bool) -> bool:
+    lines, widths = text_render.calc_horizontal(font_size, text, w, h, lang, hyphenate)
+    if not lines:
+        return True
+    # calc_horizontal inflates its own width limit on overflow, so validate
+    # the wrap against the real box instead of trusting what it was fed.
+    return len(lines) * font_size <= h and max(widths) <= w
+
+
+def _text_fits_vertical(font_size: int, text: str, w: float, h: float) -> bool:
+    cols, heights = text_render.calc_vertical(font_size, text, h)
+    if not cols:
+        return True
+    # Columns advance horizontally, glyphs flow vertically.
+    return len(cols) * font_size <= w and max(heights) <= h
+
+
+def shrink_font_size_to_fit(region: 'TextBlock', target_font_size: int, font_size_minimum: int,
+                            hyphenate: bool = True):
+    """Largest font size <= target whose text fits the region's own box.
+
+    Returns target_font_size when it already fits and None when the text does
+    not fit even at font_size_minimum (the caller should grow the box instead).
+    Never returns a size above target. Fitting is monotonic in font size, so a
+    binary search finds the optimum in a handful of calc_* probes.
+    """
+    w, h = region.unrotated_size
+    text = region.translation
+    if w <= 0 or h <= 0 or not text:
+        return None
+    if region.vertical:
+        def fits(fs): return _text_fits_vertical(fs, text, w, h)
+    else:
+        lang = getattr(region, "target_lang", "en_US")
+        def fits(fs): return _text_fits_horizontal(fs, text, w, h, lang, hyphenate)
+    if fits(target_font_size):
+        return target_font_size
+    if not fits(font_size_minimum):
+        return None  # does not fit even at the smallest usable size
+    lo, hi = font_size_minimum, target_font_size  # lo fits, hi does not
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if fits(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def resize_regions_to_font_size(img: np.ndarray, text_regions: List['TextBlock'], font_size_fixed: int, font_size_offset: int, font_size_minimum: int,
+                                shrink_to_fit: bool = False, hyphenate: bool = True):
     """
     Adjust text region size to accommodate font size and translated text length.
     
@@ -109,6 +159,9 @@ def resize_regions_to_font_size(img: np.ndarray, text_regions: List['TextBlock']
         font_size_fixed: Fixed font size (overrides other font parameters)
         font_size_offset: Font size offset
         font_size_minimum: Minimum font size (-1 for auto-calculation)
+        shrink_to_fit: Try shrinking the font into the original box before
+            growing the box or relying on the warp to downscale the glyphs
+        hyphenate: Whether hyphenation may be assumed when probing fit
 
     Returns:  
         List of adjusted text region bounding boxes
@@ -136,9 +189,19 @@ def resize_regions_to_font_size(img: np.ndarray, text_regions: List['TextBlock']
         else:  
             target_font_size = current_base_font_size + font_size_offset  
 
-        target_font_size = max(target_font_size, font_size_minimum, 1)  
+        target_font_size = max(target_font_size, font_size_minimum, 1)
         # print("-" * 50)
-        # logger.debug(f"Calculated target font size: {target_font_size} for text '{region.translation}'")  
+        # logger.debug(f"Calculated target font size: {target_font_size} for text '{region.translation}'")
+
+        # Shrink-to-fit: prefer a smaller font inside the original box over
+        # growing the box (or letting the warp silently downscale the glyphs).
+        if shrink_to_fit:
+            fitted = shrink_font_size_to_fit(region, target_font_size, font_size_minimum, hyphenate)
+            if fitted is not None:
+                target_font_size = fitted
+                dst_points_list.append(region.min_rect)
+                region.font_size = int(target_font_size)
+                continue
 
         # Single-axis text box expansion
         single_axis_expanded = False
@@ -289,13 +352,15 @@ async def dispatch(
     disable_font_border: bool = False,
     stroke_width: Optional[float] = None,
     contrast_aware_stroke: bool = False,
+    shrink_to_fit: bool = False,
     ) -> np.ndarray:
 
     text_render.set_font(font_path)
     text_regions = list(filter(lambda region: region.translation, text_regions))
 
     # Resize regions that are too small
-    dst_points_list = resize_regions_to_font_size(img, text_regions, font_size_fixed, font_size_offset, font_size_minimum)
+    dst_points_list = resize_regions_to_font_size(img, text_regions, font_size_fixed, font_size_offset, font_size_minimum,
+                                                  shrink_to_fit=shrink_to_fit, hyphenate=hyphenate)
 
     # TODO: Maybe remove intersections
 
