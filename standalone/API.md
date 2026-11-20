@@ -185,7 +185,9 @@ upstream defaults** — any key you set in `config` always wins.
 ```
 
 - `minX/minY/maxX/maxY`: region bounding box in image pixels.
-- `angle`: detected text angle in degrees. `prob`: detector confidence 0–1.
+- `angle`: detected text angle in degrees. `prob`: OCR confidence 0–1 — the
+  area-weighted mean of the region's own textlines' confidence. Set
+  `config.ocr.prob` (default off) to drop regions below a confidence floor.
 - `text`: language-code-keyed map — the source-language key holds detected
   text, the target-language key holds the translation.
 - `text_color.fg/bg`: estimated foreground/background RGB triplets.
@@ -359,7 +361,7 @@ straight back:
 | `translation` | usually | String to typeset. If omitted, `text[config.translator.target_lang]` (default `ENG`) is used. Neither present → 422. |
 | `text` | optional | Language-keyed source-text map, same shape as section 6. A non-target-language entry is used for mask fitting (deciding which pixels get painted out). |
 | `angle` | optional (0) | Text angle in degrees — carry over from `/translate/json` unchanged. |
-| `prob` | optional (1.0) | Detector confidence; unused when rendering. |
+| `prob` | optional (1.0) | OCR confidence; unused when rendering. |
 | `text_color` | optional | `{"fg":[r,g,b],"bg":[r,g,b]}`. Omit and the server estimates both from the region's pixels. |
 | `is_bulleted_list` | optional | Accepted and ignored — recomputed from the text. |
 | `background` | optional | Accepted and ignored — inpainting always regenerates it from the input image. |

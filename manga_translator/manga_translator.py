@@ -899,8 +899,10 @@ class MangaTranslator:
               
             region.text = stripped_text.strip()     
             
+            min_prob = config.ocr.prob
             if len(region.text) < config.ocr.min_text_length \
                     or not is_valuable_text(region.text) \
+                    or (min_prob is not None and region.prob < min_prob) \
                     or (not config.translator.no_text_lang_skip and langcodes.tag_distance(region.source_lang, config.translator.target_lang) == 0):
                 if region.text.strip():
                     logger.info(f'Filtered out: {region.text}')
@@ -908,6 +910,8 @@ class MangaTranslator:
                         logger.info('Reason: Text length is less than the minimum required length.')
                     elif not is_valuable_text(region.text):
                         logger.info('Reason: Text is not considered valuable.')
+                    elif min_prob is not None and region.prob < min_prob:
+                        logger.info(f'Reason: OCR confidence {region.prob:.2f} is below the configured minimum {min_prob}.')
                     elif langcodes.tag_distance(region.source_lang, config.translator.target_lang) == 0:
                         logger.info('Reason: Text language matches the target language and no_text_lang_skip is False.')
             else:

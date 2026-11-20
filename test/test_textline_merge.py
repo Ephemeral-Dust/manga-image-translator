@@ -416,3 +416,49 @@ async def test_char_gap_tolerance_plumbing():
     regions = await dispatch_merge(stacked_lines(45), 600, 600,
                                    char_gap_tolerance=2.0, split_gamma=1.5)
     assert len(regions) == 1
+
+
+@pytest.mark.asyncio
+async def test_region_prob_is_own_lines_only():
+    # Region confidence must be the area-weighted mean of its own lines' OCR
+    # confidence; dividing by the whole image's textline area let an unrelated
+    # low-confidence region elsewhere inflate this number.
+    lines = [
+        line_box(100, 100, 300, 140, "LINE ONE", prob=0.9),
+        line_box(100, 145, 300, 185, "LINE TWO", prob=0.8),  # gap 5 -> merged with line one
+        line_box(100, 400, 140, 440, "X", prob=0.3),          # far away -> own region
+    ]
+    regions = await dispatch_merge(lines, 600, 600)
+    assert len(regions) == 2
+    merged = next(r for r in regions if len(r.lines) == 2)
+    lone = next(r for r in regions if len(r.lines) == 1)
+    assert merged.prob == pytest.approx((0.9 * 0.8) ** 0.5, rel=1e-3)
+    assert lone.prob == pytest.approx(0.3, rel=1e-3)
+
+
+@pytest.mark.asyncio
+async def test_ocr_prob_gate_filters_low_confidence_regions():
+    # config.ocr.prob (default None = off) gates regions on their OCR
+    # confidence before they ever reach the translator.
+    from types import SimpleNamespace
+    from manga_translator.manga_translator import MangaTranslator
+    from manga_translator.config import Config
+
+    textlines = [
+        line_box(100, 100, 400, 140, "GOOD CONFIDENCE SIGN", prob=0.9),
+        line_box(100, 400, 400, 440, "WEAK SIGN", prob=0.3),
+    ]
+    fake_self = SimpleNamespace(verbose=False, _model_usage_timestamps={})
+    ctx = SimpleNamespace(textlines=list(textlines),
+                          img_rgb=np.zeros((600, 600, 3), dtype=np.uint8))
+
+    cfg = Config()
+    cfg.translator.target_lang = 'JPN'  # default ENG would skip English source via language match
+    texts = [r.text for r in await MangaTranslator._run_textline_merge(fake_self, cfg, ctx)]
+    assert "GOOD CONFIDENCE SIGN" in texts and "WEAK SIGN" in texts
+
+    cfg = Config()
+    cfg.translator.target_lang = 'JPN'
+    cfg.ocr.prob = 0.5
+    texts = [r.text for r in await MangaTranslator._run_textline_merge(fake_self, cfg, ctx)]
+    assert "GOOD CONFIDENCE SIGN" in texts and "WEAK SIGN" not in texts

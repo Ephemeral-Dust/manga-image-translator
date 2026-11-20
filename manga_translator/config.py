@@ -323,7 +323,7 @@ class OcrConfig(BaseModel):
     ignore_bubble: int = 0
     """The threshold for ignoring text in non bubble areas, with valid values ranging from 1 to 50, does not ignore others. Recommendation 5 to 10. If it is too low, normal bubble areas may be ignored, and if it is too large, non bubble areas may be considered normal bubbles"""
     prob: float | None = None
-    """Minimum probability of a text region to be considered valid. If None, uses the model default."""
+    """Minimum OCR confidence (region probability, 0-1) for a text region to survive filtering. If None, no confidence-based filtering is applied."""
 
 class Config(BaseModel):
     # General
