@@ -1,0 +1,13 @@
+
+# Former default compose: frontend UI only (the server now lives in the default
+# docker-compose.yml). Run with: docker compose -f docker-compose.front.yml up
+services:
+  front:
+    image: front
+    build:
+      context: front
+      dockerfile: ./Dockerfile
+    environment:
+      NODE_ENV: production
+    ports:
+      - 3000:3000

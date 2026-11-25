@@ -1,11 +1,40 @@
-
+# Standalone translation server: POST an image, get a typeset image back.
+#   Build & start:  docker compose up -d --build
+#   Logs:           docker compose logs -f server
+#   (docker-compose.front.yml keeps the old frontend-only compose for reference.)
+# Device switch: set MIMG_DEVICE=cpu|xpu in .env (compose reads it from here for
+#   interpolation) and re-run with --build — DEVICE is a build argument, so
+#   swapping flavors requires a rebuild, not just a restart.
+# API contract (endpoints, profiles, errors): standalone/API.md.
 services:
-  front:
-    image: front
+  server:
     build:
-      context: front
-      dockerfile: ./Dockerfile
-    environment:
-      NODE_ENV: production
+      context: .
+      dockerfile: Dockerfile.cpu
+      args:
+        DEVICE: ${MIMG_DEVICE:-cpu}
+    image: manga-image-translator-server:${MIMG_DEVICE:-cpu}
     ports:
-      - 3000:3000
+      - "5003:5003"
+    environment:
+      MIMG_HOST: 0.0.0.0
+      MIMG_PORT: "5003"
+      # MIMG_USE_GPU is decided by the image's build variant (cpu -> 0,
+      # xpu -> 1); set it here (or in .env) to override, e.g. force an
+      # xpu-built image back onto CPU without rebuilding.
+      # Set to require the X-API-Key header on translate endpoints:
+      # MIMG_API_KEY: "change-me"
+    env_file:
+      # Translator API keys (DEEPL_AUTH_KEY, OPENAI_API_KEY, ...) and
+      # MIMG_DEVICE. Gitignored, so create it on the server before starting.
+      - path: .env
+        required: false
+    volumes:
+      - ./result:/app/result
+    # DEVICE=xpu only — Intel iGPU compute needs the render node passed through:
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - render
+    #   - video
+    restart: unless-stopped
