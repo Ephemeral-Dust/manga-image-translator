@@ -1,0 +1,87 @@
+# CPU-only build for hosting the standalone translation server
+# (python -m standalone: POST an image, get a typeset image back; see standalone/API.md).
+# Mirrors the upstream CUDA Dockerfile but installs CPU or Intel XPU torch wheels
+# instead of the multi-GB CUDA build.
+#
+# Build variants (selected by the DEVICE build arg, wired to MIMG_DEVICE in .env):
+#   DEVICE=cpu  (default) pure-CPU inference, works on any x86-64 host.
+#   DEVICE=xpu  Intel iGPU/Arc via PyTorch's XPU (SYCL) backend — experimental.
+#               Upstream labels Intel GPU support "Prototype" and validates it
+#               only on Arc A/B-series and Core Ultra (Meteor/Arrow/Lunar/Panther
+#               Lake) on Ubuntu 24.04+; older Iris Xe-class chips are unvalidated.
+#               Uses the iGPU compute engine, not the Quick Sync media engine.
+#               Needs host Intel GPU drivers and /dev/dri access at runtime
+#               (see docker-compose.server.yml).
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Isolated venv so the distro Python stays untouched.
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+
+ARG DEVICE=cpu
+
+COPY requirements.txt /app/requirements.txt
+
+# torch/torchvision from PyTorch's per-flavor wheel index first, so the pinned
+# versions in requirements.txt are already satisfied and pip won't pull the
+# multi-GB CUDA builds from PyPI.
+# XPU_PKGS are Debian package names for the Level Zero/OpenCL user stack; adjust
+# if the base distro renames or drops them.
+RUN export TZ=Etc/UTC \
+        && case "${DEVICE}" in \
+               cpu) PIP_INDEX=https://download.pytorch.org/whl/cpu; XPU_PKGS="";;\
+               xpu) PIP_INDEX=https://download.pytorch.org/whl/xpu; XPU_PKGS="intel-opencl-icd level-zero";;\
+               *) echo "Dockerfile.cpu: unsupported DEVICE=${DEVICE} (use cpu or xpu)" >&2; exit 1;; \
+           esac \
+        && apt-get update \
+        && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+            g++ git libgl1 libglib2.0-0 libgomp1 libsm6 libxext6 ${XPU_PKGS} \
+        && python -m venv "${VIRTUAL_ENV}" \
+        && "${VIRTUAL_ENV}/bin/python" -m pip install --no-cache-dir \
+            --index-url "${PIP_INDEX}" torch==2.14.1 torchvision==0.29.1 \
+        && "${VIRTUAL_ENV}/bin/python" -m pip install --no-cache-dir -r /app/requirements.txt \
+        && "${VIRTUAL_ENV}/bin/python" -m pip check \
+        && apt-get remove g++ git --yes \
+        && apt-get autoremove --yes \
+        && rm -rf /var/lib/apt/lists/* /var/cache/apt
+
+COPY . /app
+
+# Prepare models (build-cache keeps weights across rebuilds)
+RUN --mount=type=cache,target=/.cache/models \
+    cp -rn /.cache/models/. /app/models/ || true && \
+    python -u docker_prepare.py --continue-on-error && \
+    cp -rn /app/models/. /.cache/models/ || true
+
+RUN rm -rf /tmp && mkdir /tmp && chmod 1777 /tmp
+
+# Add /app to Python module path
+ENV PYTHONPATH="/app"
+
+# Serve on all interfaces (LAN-reachable).
+# API keys come from the environment (compose env_file), never from this image.
+ENV PYTHONUNBUFFERED=1 \
+    MIMG_HOST=0.0.0.0 \
+    MIMG_PORT=5003 \
+    DEVICE=${DEVICE}
+
+# Default MIMG_USE_GPU from the build variant (cpu -> 0, xpu -> 1) unless the
+# environment sets it explicitly. With use_gpu on, the pipeline itself picks
+# cuda/mps/xpu (manga_translator/manga_translator.py already handles xpu).
+RUN printf '%s\n' \
+        '#!/bin/sh' \
+        'if [ -z "${MIMG_USE_GPU}" ]; then' \
+        '    if [ "${DEVICE}" = xpu ]; then MIMG_USE_GPU=1; else MIMG_USE_GPU=0; fi' \
+        '    export MIMG_USE_GPU' \
+        'fi' \
+        'exec "$@"' \
+    > /usr/local/bin/mimg-entrypoint.sh \
+    && chmod 755 /usr/local/bin/mimg-entrypoint.sh
+
+EXPOSE 5003
+
+WORKDIR /app
+
+ENTRYPOINT ["/usr/local/bin/mimg-entrypoint.sh", "python", "-m", "standalone"]

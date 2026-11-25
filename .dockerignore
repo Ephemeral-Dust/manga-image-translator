@@ -9,3 +9,6 @@ models/*
 test/testdata/bboxes
 /venv
 .git
+.env
+.agents
+.agent-notes.md
