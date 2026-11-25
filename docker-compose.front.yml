@@ -1,6 +1,6 @@
 
-# Former default compose: frontend UI only (the server now lives in the default
-# docker-compose.yml). Run with: docker compose -f docker-compose.front.yml up
+# Former default compose: frontend UI only (the server now lives in compose.yml).
+# Run with: docker compose -f docker-compose.front.yml up
 services:
   front:
     image: front
