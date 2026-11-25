@@ -11,7 +11,7 @@
 #               Lake) on Ubuntu 24.04+; older Iris Xe-class chips are unvalidated.
 #               Uses the iGPU compute engine, not the Quick Sync media engine.
 #               Needs host Intel GPU drivers and /dev/dri access at runtime
-#               (see compose.yml).
+#               (see compose.yaml).
 FROM python:3.12-slim
 
 WORKDIR /app
