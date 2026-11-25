@@ -21,6 +21,9 @@ share
 .DS_Store
 dev/
 
+# Agent scratch notes
+.agent-notes.md
+
 # Distribution / packaging
 .Python
 build/
