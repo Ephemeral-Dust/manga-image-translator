@@ -35,6 +35,57 @@ LANGUAGE_ORIENTATION_PRESETS = {
     'FIL': 'h'
 }
 
+# Aliases from free-form language tags (BCP-47/ISO-639-1 such as `en` or
+# `zh-Hans`, ISO-639-3 such as `spa`) to the 3-letter codes used by
+# LANGUAGE_ORIENTATION_PRESETS. Without them a client that sends BCP-47 tags
+# misses the preset and every render direction falls back to box aspect ratio
+# — e.g. English typeset one glyph per line inside tall manga balloons.
+_LANGUAGE_CODE_ALIASES = {
+    'cs': 'CSY', 'ces': 'CSY', 'nl': 'NLD', 'nld': 'NLD', 'en': 'ENG',
+    'eng': 'ENG', 'fr': 'FRA', 'fra': 'FRA', 'de': 'DEU', 'deu': 'DEU',
+    'hu': 'HUN', 'hun': 'HUN', 'it': 'ITA', 'ita': 'ITA', 'ja': 'JPN',
+    'jp': 'JPN', 'jpn': 'JPN', 'ko': 'KOR', 'kor': 'KOR', 'pl': 'POL',
+    'pol': 'POL', 'pt': 'PTB', 'por': 'PTB', 'ro': 'ROM', 'ron': 'ROM',
+    'ru': 'RUS', 'rus': 'RUS', 'es': 'ESP', 'spa': 'ESP', 'tr': 'TRK',
+    'tur': 'TRK', 'uk': 'UKR', 'ukr': 'UKR', 'vi': 'VIN', 'vie': 'VIN',
+    'ar': 'ARA', 'ara': 'ARA', 'th': 'THA', 'tha': 'THA', 'id': 'IND',
+    'ind': 'IND', 'tl': 'FIL', 'fil': 'FIL', 'zh': 'CHS', 'zho': 'CHS',
+    'chi': 'CHS', 'cn': 'CHS',
+}
+
+
+def canonical_language_code(tag):
+    """Normalizes a free-form language tag to the 3-letter codes used by
+    LANGUAGE_ORIENTATION_PRESETS. Chinese script/region subtags pick
+    CHS/CHT; bare zh defaults to CHS (matching translators/common.py).
+    Unrecognized tags come back upper-cased, so preset lookups simply miss.
+    """
+    if not tag:
+        return None
+    tag = str(tag).strip().lower().replace('_', '-')
+    primary, _, sub = tag.partition('-')
+    code = _LANGUAGE_CODE_ALIASES.get(tag) or _LANGUAGE_CODE_ALIASES.get(primary) or primary.upper()
+    if code in ('CHS', 'CHT'):
+        if 'hant' in tag or sub in ('tw', 'hk', 'mo'):
+            return 'CHT'
+        return 'CHS'
+    return code
+
+
+def resolve_language_orientation(tag, default='auto'):
+    """Writing direction for a language tag, case-insensitive and BCP-47 aware.
+
+    Returns 'h', 'v', 'hr' or 'vr' for languages with a fixed direction, and
+    `default` ('auto') for CJK ('auto' preset entries) and unknown tags, so
+    callers fall back to box geometry.
+    """
+    code = canonical_language_code(tag)
+    if code:
+        direction = LANGUAGE_ORIENTATION_PRESETS.get(code)
+        if direction in ('h', 'v', 'hr', 'vr'):
+            return direction
+    return default
+
 
 class TextBlock(object):
     """
@@ -346,7 +397,7 @@ class TextBlock(object):
     def direction(self):
         """Render direction determined through used language or aspect ratio."""
         if self._direction not in ('h', 'v', 'hr', 'vr'):
-            d = LANGUAGE_ORIENTATION_PRESETS.get(self.target_lang)
+            d = resolve_language_orientation(self.target_lang)
             if d in ('h', 'v', 'hr', 'vr'):
                 return d
 

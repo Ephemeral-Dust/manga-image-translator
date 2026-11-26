@@ -217,7 +217,7 @@ Knobs a client is most likely to touch:
 | Path in config | Default | Notes |
 |---|---|---|
 | `translator.translator` | `"sugoi"` | Local: `sugoi`, `nllb`, `m2m100`, `mbart50`, `qwen2`, `sakura`, `offline`, `none` (skip translation), `original` (no-op passthrough). Cloud (need keys in server env/`.env`): `deepl`, `papago`, `caiyun`, `youdao`, `baidu`, `chatgpt`, `deepseek`, `gemini`, `groq`, `custom_openai`, ... Full list in `/config-schema`. |
-| `translator.target_lang` | `"ENG"` | Free-form language code/name as accepted by the chosen translator. |
+| `translator.target_lang` | `"ENG"` | Free-form language code/name as accepted by the chosen translator. Render direction recognizes any casing and BCP-47 tags: `en`, `en-US`, `eng` behave like `ENG`; `zh-Hans`/`zh-Hant`/`zh-TW` split simplified/traditional; an unrecognized tag falls back to box-shape direction inference. |
 | `detector.detector` | `"default"` | Also: `dbconvnext`, `ctd`, `craft`, `paddle`, `none` (treat the whole image as one text region). |
 | `ocr.ocr` | `"48px"` | Also: `32px`, `48px_ctc`, `mocr`. |
 | `inpainter.inpainter` | `"lama_large"` | Also: `lama_mpe`, `sd`, `none`, `original`. |
@@ -384,7 +384,12 @@ render settings (font, size fit, RTL order, hyphenation...). Detection, OCR
 and translation never run on these endpoints, so `detector`, `ocr` and
 `translator.translator` config keys have no effect here;
 `translator.target_lang` still decides the translation fallback lookup and the
-render script direction, unless a region overrides it with `direction`.
+render script direction, unless a region overrides it with `direction`. The
+direction lookup is tolerant of tag spelling: `en`, `en-US`, `eng` and `ENG`
+all mean English (horizontal); `ar` means right-to-left; `ja`, `zh` and
+unknown tags infer direction from the box shape. The translation fallback
+lookup (`text[...]`) is **exact**, so send a `translation` field or match the
+key you got back from `/translate/json`.
 
 ### Round-trip example (server detects, your model translates, server renders)
 
